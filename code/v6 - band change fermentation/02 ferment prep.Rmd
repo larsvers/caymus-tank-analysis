@@ -14,6 +14,7 @@ library(tidyverse)
 library(lubridate)
 library(ggplot2)
 library(pracma)
+library(RcppRoll)
 detach("package:dplyr")
 library(dplyr)
 
@@ -83,6 +84,8 @@ Step 7) Add a ferment boolean
 
 ```{r}
 
+## ORIGINAL
+
 # Identify fermentation periods
 df_brix <- df %>%
   select(time, brix) %>%
@@ -100,29 +103,56 @@ df_brix <- df %>%
 
   # 3) Fill time points during start and end.
   fill(ferment) %>%
-  
+
   # 4) Remove redundant "end" values.
   mutate(keep = if_else(ferment == "ferment" | (ferment == "end" & lag(ferment) == "ferment"), TRUE, FALSE)) %>%
   mutate(ferment = if_else(keep, ferment, NA_character_)) %>%
-  select(-keep) %>% 
-  
+  select(-keep) %>%
+
   # 5) Rename first fermentation value to "start".
-  mutate(ferment = if_else(ferment == "ferment" & is.na(lag(ferment)), "start", ferment)) %>% 
+  mutate(ferment = if_else(ferment == "ferment" & is.na(lag(ferment)), "start", ferment)) %>%
 
   # 6) Name the fermentation period with their start date.
   mutate(ferment_period = case_when(
-    ferment == "start" ~ format(time, "%y-%b-%d"), 
+    ferment == "start" ~ format(time, "%y-%b-%d"),
     ferment == "end" ~ "end",
-    TRUE ~ NA_character_))  %>% 
-  fill(ferment_period) %>% 
+    TRUE ~ NA_character_))  %>%
+  fill(ferment_period) %>%
   mutate(ferment_period = if_else(ferment_period == "end", lag(ferment_period), ferment_period)) %>%
-  mutate(ferment_period = if_else(ferment_period == "end", NA_character_, ferment_period)) %>% 
+  mutate(ferment_period = if_else(ferment_period == "end", NA_character_, ferment_period)) %>%
 
   # 7) Add a boolean ferment variable
   mutate(ferment_bool = if_else(!is.na(ferment), TRUE, FALSE))
 
 # View(df_brix)
   
+```
+
+C1 showed an example of an incorrect fermentation period that lingered at around 20 brix before falling off, registering as a false positive fermentation.
+
+The following procedure defends against that case by:
+
+1. Checking if the 10 valued rolling brix before the drop off was above 10 
+2. It should be around 0 or below, so if it's high it's defined as a false positive and the whole period will be removed
+
+```{r}
+
+# Detect and isolate false positive fermentation periods.
+false_periods <- df_brix %>% 
+  mutate(brix_rolling = RcppRoll::roll_mean(brix, 10, align = "right", fill = NA_real_)) %>% 
+  mutate(remove_period = ifelse(ferment == "end" & lag(brix_rolling) > 10, TRUE, FALSE)) %>% 
+  filter(remove_period) %>% 
+  distinct(ferment_period) %>% 
+  pull(ferment_period)
+
+# Remove them.
+df_brix <- df_brix %>% 
+  mutate(
+    ferment_bool = ifelse(ferment_period %in% false_periods, FALSE, ferment_bool),
+    ferment_period = ifelse(ferment_bool, ferment_period, NA_character_),
+    ferment = ifelse(ferment_bool, ferment, NA_character_),
+  )
+
 ```
 
 Check ferment periods visually:
@@ -138,12 +168,11 @@ ends <- df_brix %>%
   mutate(ferment = ifelse(ferment == "end", time, NA_Date_)) %>% 
   pull(ferment)
 
-(p <- df_brix %>% 
+p <- df_brix %>% 
   ggplot() +
     geom_line(aes(x = time, y = brix)) + 
     geom_vline(aes(xintercept = starts), colour = 'cornflowerblue') +
     geom_vline(aes(xintercept = ends), colour = 'maroon')
-)
 
 plotly::ggplotly(p)
 
