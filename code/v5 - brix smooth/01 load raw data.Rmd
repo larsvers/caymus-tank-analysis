@@ -1,0 +1,301 @@
+---
+title: "Data v5 analysis - load"
+output: html_notebook
+---
+
+This analysis looks at isolating the Fermentation periods
+
+This notebook follows the `01 load raw data.Rmd` file from v4...
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+```
+
+# Load Tank
+
+```{r laod-all}
+
+# Get file names > remove unwanted files > get file_paths
+data_path <- "/data/v5/C1/"
+files <- list.files(path = paste0(root_path, data_path))
+
+files_clean <- tibble(file_name = files) %>% 
+  filter(!str_starts(file_name, '~')) %>% # remove open books
+  pull(file_name)
+
+file_paths <- sapply(files_clean, function(file) { paste0(root_path, data_path, file)  }, USE.NAMES = FALSE)
+
+# Read in all files.
+df_list <- lapply(file_paths, function (x) { readxl::read_xlsx(x) })
+
+# Check if all files columns are the same and in the same order
+names_vector <- names(df_list[[1]])
+
+lapply(df_list, function(x) { all(name_vector == names(x)) }) %>% 
+  unlist() %>% 
+  all()
+
+```
+
+# Check and reshape variables
+
+If we get a TRUE out above, continue with throwing all individual frames into a single frame:
+
+```{r}
+
+# Join list items.
+df_orig <- bind_rows(df_list) %>% as_tibble()
+
+names(df_orig)
+
+```
+
+Check the renaming below is correct - if so: rename...
+
+```{r}
+
+(df_orig <- df_orig %>% 
+  select(time = 1, brix = 5, temp = 7, status = 11, setpoint = 9, abv = 4, gravity = 6))
+
+```
+
+Check cases per month
+
+```{r eval=FALSE}
+
+df_orig %>% 
+  mutate(month = lubridate::month(time, label = TRUE)) %>% 
+  group_by(month) %>% 
+  count()
+
+df_orig %>% 
+  mutate(month = lubridate::month(time, label = TRUE)) %>% 
+  group_by(month) %>% 
+  count()%>% 
+  ggplot() +
+    geom_bar(aes(x = month, y = n), stat = "identity")
+
+```
+
+Many events in Sep / Oct - probably down to fermentation
+
+```{r}
+df_orig %>% 
+  mutate(month = month(time, label = TRUE), day = day(time)) %>% 
+  group_by(month, day) %>% 
+  count()
+```
+
+# Recode df
+
+Let's check for `time` NA's
+
+```{r}
+
+# Check NA's which we'd remove.
+df_orig %>% filter(is.na(time))
+df_orig %>% filter(is.na(temp), is.na(status), is.na(setpoint), is.na(brix))
+df_orig %>% filter(is.na(brix))
+
+# Remove appropriately.
+(df <- df_orig %>% 
+  filter(!is.na(brix)))
+
+
+```
+
+Add date variables
+
+```{r}
+
+(df <- df %>% 
+  mutate(
+    wday = lubridate::wday(time, label = TRUE),
+    day = lubridate::mday(time),
+    month = lubridate::month(time, label = TRUE),
+    year = lubridate::year(time),
+    hour = lubridate::hour(time)
+  ))
+
+```
+
+Let's sort it. This is crucially important as the data has been joined in alphabetical order (2020-dec, 2021-apr, 2020-aug, ...)
+
+```{r}
+
+(df <- df %>% arrange(time))
+
+```
+
+Each monthly dataset has NA's for `status`, `state` and `setpoint` until a value is being added. So we need to fill the column with the previous value. Let's check where the NA's are per month:
+
+```{r eval=FALSE}
+
+df %>% 
+  group_by(year, month, status) %>% 
+  count() 
+
+df %>% 
+  group_by(year, month, setpoint) %>% 
+  count() 
+
+```
+
+Note, we have done this already in the input EXCELs for this analysis, So I'll skip these part (check the v3 `load.Rmd`)
+
+SKIPPED >>>>
+
+Problem is if a variable has only NA's in Dec 2021 as there would be nothing to fill then. Like `state`. 
+
+Nevertheless, we'll fill state, status and setpoint
+
+```{r, eval=FALSE}
+
+# # Check how many na's there are w/o filling
+# df %>% 
+#   filter(is.na(state) | is.na(status) | is.na(setpoint))
+# 
+# # Check how many na's there are w filling
+# df %>% 
+#   fill(state, status, setpoint) %>% 
+#   filter(is.na(state) | is.na(status) | is.na(setpoint))
+# 
+# # Check how many NA's there are for each of the key vars (state, status, setpoint) per month
+# df %>% 
+#   fill(state, status, setpoint) %>% 
+#   filter(is.na(state) | is.na(status) | is.na(setpoint)) %>% 
+#   # group_by(year, month, state) %>% 
+#   # group_by(year, month, status) %>% 
+#   group_by(year, month, setpoint) %>% 
+#   count()
+
+```
+
+Now fill the values:
+
+```{r}
+
+# (df <- df %>% 
+#   fill(state, status, setpoint))
+
+```
+
+<<<< SKIPPED
+
+# Deal with duplicates
+
+Let's check if there are any full duplicates - across all variables:
+
+```{r}
+
+# Check.
+df %>% 
+  group_by(time, status, setpoint, temp, brix) %>% 
+  count() %>% 
+  filter(n > 1)
+
+# Do.
+(df <- df %>% 
+  distinct(time, status, setpoint, temp, .keep_all = TRUE))
+
+```
+
+Let's check if there are any dupes just for the datetime:
+
+```{r eval=FALSE}
+
+# Check for datetime dupes
+df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n))
+
+# Get a vector of all duplicate datetimes.
+time_dupes <- df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+  pull(time)
+
+# Check it..
+time_dupes %>% head()
+
+# Look at only the dupe times (actual and dupe)
+df %>% 
+  filter(time %in% time_dupes)
+
+```
+
+So I'd say, we should always take the **last** value of the datetime dupes. As this one will capture the most recent event. 
+
+```{r}
+
+# Get a vector of all duplicate datetimes.
+time_dupes <- df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+  pull(time)
+
+# 1) Find the dupes > 2) find the ones to keep > 3) find the ones to remove
+(df <- df %>% 
+  mutate(dupe = ifelse(time %in% time_dupes, 1, 0)) %>% 
+  mutate(keep = ifelse(dupe == 1 & time != lead(time), 1, 0)) %>% 
+  mutate(remove = ifelse(dupe == 1 & keep != 1, 1, 0)) %>% 
+  filter(remove != 1) %>% 
+  select(-c(dupe, keep, remove)))
+  
+```
+
+
+# Visualise all data
+
+Let's look at all data:
+
+```{r vis-df}
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp"), values = c("grey")) +
+  labs(y = "temp"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix")) +
+  scale_colour_manual("", breaks = c("brix"), values = c("lightskyblue")))
+
+(p3 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = abv, colour = "abv")) +
+  scale_colour_manual("", breaks = c("abv"), values = c("pink")))
+
+(p4 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = gravity, colour = "gravity")) +
+  scale_colour_manual("", breaks = c("gravity"), values = c("tomato")))
+
+gridExtra::grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+Seems to make sense at first glance. Isolate Brix next
+
+# Write 
+
+```{r}
+
+write_csv(df, paste0(root_path, '/data/v5/df-clean-c1.csv', na = ""))
+
+```
+

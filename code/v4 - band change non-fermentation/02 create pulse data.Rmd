@@ -1,0 +1,240 @@
+---
+title: "Data v4 analysis - create profile data"
+output: html_notebook
+---
+
+This requires the `df-clean.csv` created at `01 load raw data.Rmd`.
+
+The transformation builds on the `explore.Rmd` file of v3.
+
+```{r libs, echo=FALSE}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+data_path <-  "/data/v4"
+```
+
+
+# Load
+
+Read state as double otherwise it'll be read as logical.
+
+```{r}
+
+(df <- read_csv(paste0(root_path, data_path,  "/df-clean.csv"), col_types = cols(.default = "?")))
+
+```
+
+# Profile
+
+Let's check each variable
+
+```{r}
+
+df %>% skimr::skim()
+
+plot_col <- function(col) {
+  column <- enquo(col)
+  
+  p <- df %>% 
+    group_by(!!column) %>% 
+    count() %>% 
+    ggplot() +
+      geom_bar(aes(x = !!column, y = n), stat = "identity")
+
+  print(p)
+}
+
+plot_col(status)
+plot_col(setpoint)
+```
+
+# Visualise
+
+Let's look at the time series:
+
+```{r vis-initial}
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = status, colour = "lightskyblue")))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+Let's visualise them all in one visual
+
+```{r}
+
+# Get scaled variable's min/max.
+df %>% select(status) %>% summary()
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+(p <- ggplot(df, aes(x = time)) +
+  # Specificaly set `label` to also show the non-scaled status.
+  geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status")
+  ) +
+   scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month"))
+
+plotly::ggplotly(p)
+
+```
+
+Check individual months
+
+```{r}
+makeChart <- function(mth) {
+p <- ggplot(df %>% filter(month == mth), aes(x = time)) +
+  geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "State")
+  ) +
+  labs(title = mth)
+  
+print(p)
+plotly::ggplotly(p)
+
+}
+
+makeChart("Mar")
+makeChart("Apr")
+makeChart("May")
+```
+
+# Isolate pulse cooling sections
+
+## Build and test algo
+
+1) We create a diff time in seconds between rows (next minus current)
+2) Check if the `status` values is pulsing between 2 and 3
+
+This will result in most rows being correctly identified. However, it can be that events other than a status change happen during pulse cooling, like - obviously as that's hoped for - a temperature change. In this case, the status remains the same over a couple of events. To catch these two, we also:
+
+3) Check if a `status` does not change BUT the time diff is small (e.g. < 180)
+
+As this change happens on the full `pulse` vector, the mutate function is not aware of a change in `pulse` while doing it, so we need a couple of these mutates to cover multiple pulse cooling events at the same time. Hacky, but it works.
+
+4) Check for each pulse that it's not too long (threshold: 600)
+
+5) Identify start and end events for each pulse period
+
+6) Add a unique identifier to each pulse period so we can group and analyse them individually
+
+```{r}
+df %>%
+  # filter(time > lubridate::ymd("2021-10-06"), time < lubridate::ymd("2021-10-08")) %>%
+
+  # 1) Add time diff variable to each row.
+  mutate(diff = as.numeric(lead(time) - time)) %>% 
+  
+  # 2) Create `pulse` variable by checking if status is oscillating.
+  mutate(pulse = ifelse(
+    lag(status) != status & lead(status) != status
+    & ((status == 3 | status == 2) & (lag(status) == 3 | lag(status) == 2) & (lead(status) == 3 | lead(status) == 2))
+    , 'pulse', NA)) %>%
+
+  # 3) Check if non-status events slipped in.
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & is.na(pulse), ifelse(diff < 180, 'pulse', NA), pulse)) %>%
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & is.na(pulse), ifelse(diff < 180, 'pulse', NA), pulse)) %>%
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & is.na(pulse), ifelse(diff < 180, 'pulse', NA), pulse)) %>%
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & is.na(pulse), ifelse(diff < 180, 'pulse', NA), pulse)) %>%
+
+  # 4) Check if diff's are kept at bay
+  mutate(pulse = ifelse(diff > 600, NA, pulse)) %>%
+  
+  # 5) Add start and end identifier to each pulse section.
+  mutate(pulse = ifelse(is.na(lag(pulse)) & pulse == 'pulse' & lead(pulse) == 'pulse', 'start', pulse)) %>%
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & pulse == 'pulse' & is.na(lead(pulse)), 'end', pulse)) %>%
+
+  # 6) Add a unique identifier to each pulse period.
+  mutate(pulse_group = ifelse(pulse == 'start', as.character(time), NA)) %>%
+  fill(pulse_group) %>%
+  mutate(pulse_group = ifelse(is.na(pulse), NA, pulse_group)) %>%
+
+  # 7) Write for a manual chop...
+  write_csv(paste0(root_path, data_path, "/pulse/pulse-check-01.csv"), na = "")
+
+```
+
+One thing this doesn't clean away is two short sections of the same `status`, like for example: 2,2 and then 3,3. There's surely a way to figure that out automatically (and in a next iteration we should) but for now, we save above, go through the `pulse`s and correct them manually (-> add an `issue` column and add an `"x"` for each issue row).
+
+Here we read it in:
+
+```{r}
+df_man <- read_csv(paste0(root_path, data_path, "/pulse/pulse-manual-correction.csv"), col_types = cols(pulse = "c", pulse_group = "c", issue = "c"))
+```
+
+Some more cleaning and re-shuffling:
+
+```{r}
+
+(df_man <- df_man %>% 
+  filter(is.na(issue)) %>% 
+  select(-issue) %>% 
+  select(time, temp, setpoint, status, diff, pulse, pulse_group, everything()))
+
+```
+
+Last thing to remove is very short pulses with only a single pulse:
+
+```{r}
+
+# Test
+df_man %>% 
+  mutate(rmv = ifelse(pulse == "start" & is.na(lead(pulse, n = 2)), TRUE, ifelse(pulse == "pulse" & is.na(lead(pulse)), TRUE, NA))) %>% 
+  filter(is.na(rmv))
+
+# Do
+df_pulse <- df_man %>% 
+  mutate(rmv = ifelse(pulse == "start" & is.na(lead(pulse, n = 2)), TRUE, ifelse(pulse == "pulse" & is.na(lead(pulse)), TRUE, NA))) %>% 
+  filter(is.na(rmv)) %>% 
+  select(-rmv)
+  
+```
+
+
+Check the outcome:
+
+```{r}
+df_pulse %>% view()
+```
+
+# Save
+
+```{r}
+df_pulse %>% 
+  write_csv(paste0(root_path, data_path, "/pulse/df-pulse.csv", na = ""))
+```
+

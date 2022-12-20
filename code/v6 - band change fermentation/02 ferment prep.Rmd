@@ -1,0 +1,540 @@
+---
+title: "Fermentation identification | v6"
+output: html_notebook
+---
+
+This notebook requires the dataset produced in  v6' `01 load.Rmd`. It:
+
+- isolates fermentation v non-fermentation periods
+- adds pulse cooling
+- creates and augments the pulse dataset
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(pracma)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/C1"
+```
+
+# Load required data
+
+```{r}
+(df <- readr::read_csv(
+  paste0(path_root, path_data, path_tank, '/clean/df_clean.csv'), 
+  col_types = cols(.default = "?", state = "i", mode_type = "i")))
+```
+
+# Identify and mark fermentation periods
+
+Identify fermentation periods by eye
+
+```{r eval=FALSE}
+
+(p1 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix"), colour = "steelblue"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = status, colour = "status"), colour = "tomato"))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+## Automatic fermentation curve detection
+
+Looking at above historic brix data, the first step should be to detect the overall fermentation periods fenced in by
+
+- a starting point characterised by a steep rise in brix from a very low level to ~30brix 
+- an end point characterised by a steep fall in brix into low levels
+
+### Detect fermentation periods
+
+Step 1) Focus on brix changes
+
+Step 2) Identify fermentation periods
+
+  - Identify fermentation start periods by simply mark all brix values above 15 brix (brix only ever goes beyond ~ +15 when a fermentation starts)
+  - Next identify all potential end periods by marking all brix values below -100 brix. There will be many and only a few will be real end points
+  - We identify the real end points in the next step
+  
+Step 3) Fill the NA's between ferment start periods and end periods
+
+  - This step will close the gaps only between real start and real end points of a fermentation
+
+Step 4) Remove the false end points
+
+  - Now we can remove all false end points as they are not preceded by a "ferment" value
+
+Step 5) Label the first fermentation value "start"
+
+Step 6) Label each fermentation period by its fermentation start date 
+
+Step 7) Add a ferment boolean
+
+```{r}
+
+# Identify fermentation periods
+df_brix <- df %>%
+  select(time, brix) %>%
+  # filter(time > lubridate::ymd("2021-09-14"), time < "2021-10-20") %>%
+  
+  # 1) keep only brix changes.
+  filter(brix != lag(brix)) %>% 
+
+  # 2) Find fermentation start and end.
+  mutate(ferment = case_when(
+    brix > 15 ~ "ferment",
+    lead(brix) < -100 ~ "end",
+    TRUE ~ NA_character_
+  )) %>% 
+
+  # 3) Fill time points during start and end.
+  fill(ferment) %>%
+  
+  # 4) Remove redundant "end" values.
+  mutate(keep = if_else(ferment == "ferment" | (ferment == "end" & lag(ferment) == "ferment"), TRUE, FALSE)) %>%
+  mutate(ferment = if_else(keep, ferment, NA_character_)) %>%
+  select(-keep) %>% 
+  
+  # 5) Rename first fermentation value to "start".
+  mutate(ferment = if_else(ferment == "ferment" & is.na(lag(ferment)), "start", ferment)) %>% 
+
+  # 6) Name the fermentation period with their start date.
+  mutate(ferment_period = case_when(
+    ferment == "start" ~ format(time, "%y-%b-%d"), 
+    ferment == "end" ~ "end",
+    TRUE ~ NA_character_))  %>% 
+  fill(ferment_period) %>% 
+  mutate(ferment_period = if_else(ferment_period == "end", lag(ferment_period), ferment_period)) %>%
+  mutate(ferment_period = if_else(ferment_period == "end", NA_character_, ferment_period)) %>% 
+
+  # 7) Add a boolean ferment variable
+  mutate(ferment_bool = if_else(!is.na(ferment), TRUE, FALSE))
+
+# View(df_brix)
+  
+```
+
+Check ferment periods visually:
+
+```{r eval=FALSE}
+
+# Check ferment start and end are detected correctly.
+starts <- df_brix %>% 
+  mutate(ferment = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(ferment)
+
+ends <- df_brix %>% 
+  mutate(ferment = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(ferment)
+
+(p <- df_brix %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = brix)) + 
+    geom_vline(aes(xintercept = starts), colour = 'cornflowerblue') +
+    geom_vline(aes(xintercept = ends), colour = 'maroon')
+)
+
+plotly::ggplotly(p)
+
+```
+
+### Detect fermentation phases
+
+#### Intro
+
+Each fermentation curve is assumed to go through 3 phases characterised by four points:
+
+- Phase 1: pre-fermentation (flat curve at initial brix value of ~20/30)
+- Phase 2: fermentation (falling curve)
+- Phase 3: post-fermentation (flat curve ataround just sub-zero brix)
+
+These are defined by four points and one extra points:
+
+- Point 1 (Phase 1 start): brix up to fermentation start levels (around 20/30 brix)
+- Point 2 (Phase 2 start): brix decreases notable
+- Point 3 (Phase 2 still): brix inflection - cell division decreases
+- Point 4 (Phase 3 start): brix mainly remains below 0 but still fluctuates
+- Point 5 (Phase 3 end): brix remains below 0 and steady and/or drops off
+
+We identified Points (1) and (4) above. Points (2) and (3) are  hard to find in the raw data, so we should try with a LOESS smoothed curve.
+
+#### Detect pre-fermentation start (point 1) and post-fermentation end (point 5)
+
+Straight forward as points and phase startes coincide with start and end:
+
+```{r}
+
+# Add start and end phases. 
+df_brix <- df_brix %>% 
+  mutate(ferment_phase = case_when(
+    ferment == "start" ~ "Phase 1",
+    ferment == "end" ~ "Phase 3",
+    TRUE ~ NA_character_,
+    )
+  )
+
+# Add points 1 and 4
+df_brix <- df_brix %>% 
+  mutate(ferment_point = case_when(
+    ferment == "start" ~ "Point 1",
+    ferment == "end" ~ "Point 5",
+    TRUE ~ NA_character_,
+    )
+  )
+
+```
+
+
+#### Detect fermentation start (point 2) | interactive
+
+Let's try with the base LOESS function first, if that ain't working let's throw STL at it (time series loess):
+
+Base LOESS doesn't work on the full data, but on particular fermentation periods, they do. Let's try with them:
+
+```{r eval=FALSE}
+
+# Focus in on just fermentation periods
+df_brix %>% 
+  group_by(ferment_period) %>% 
+  count()
+
+```
+
+Now let's see what works for point (2):
+
+```{r eval=FALSE}
+
+# Create base data (based on specific periods)
+df_test <-df_brix %>% 
+  rowid_to_column("index") %>% 
+  filter(ferment_period == "21-Nov-01")
+  # filter(ferment_period == "21-Oct-02")
+  # filter(ferment_period == "21-Oct-19")
+  # filter(ferment_period == "21-Sep-14")
+  # filter(ferment_period == "22-Aug-21")
+  # filter(ferment_period == "22-Sep-09")
+  # filter(ferment_period == "22-Sep-21")
+  # filter(ferment_period == "22-Sep-29")
+  
+# Add LOESS smoother.
+span <- 0.25
+result <- loess(brix ~ index, data = df_test, span = span)
+df_test$brix_smooth <- predict(result)
+
+# Add gradient.
+df_test <- df_test %>% 
+  mutate(brix_gradient = pracma::gradient(df_test$brix_smooth))
+
+# Chart.
+p1 <- df_test %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix)) +
+    geom_line(aes(y = brix_smooth), colour = "tomato") 
+
+p2 <- df_test %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_gradient), colour = "blue")
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+So after trying every above combination I think we should stick to simple and take the first row with brix_gradient < 0 as point(2)
+
+Sometimes that's a bit too early, sometimes it's too late. We can conceive a more complex algo (e.g. taking into account raw brix values or gradients) but let's just keep it simple for now :)
+
+#### Detect fermentation start and end points (points 2, 4) | automatic
+
+For each fermentation period calculate the LOESS smooth curve and the smooth curve's gradient. We'll use the smooth brix' gradient to detect points 2 (curve start), 3 (curve inflection) and 4 (curve end).
+
+We do so by using tidyr's nesting on`df_brix` which creates list-columns for each fermentation_period in order for loess and gradient to run on each nested period data.
+
+Note we're using r's base loess function with a span we set to 0.25 (which seems most plausible). We're NOT using STL decomposition with a loess trend as this is just much simpler :))
+
+```{r}
+
+# Add smooth brix and gradient.
+df_brix_smooth <- df_brix %>% 
+  # Row number column required for loess calc
+  rowid_to_column("index") %>% 
+
+  # Get brix_smooth and brix_gradient
+  # ---------------------------------
+
+  # Nest by ferment_period (funny xyntax, but hey)
+  tidyr::nest(data = c(-ferment_period, index, time, brix)) %>% 
+
+  # for each ferment_period calculate the loess for their fitted values
+  # and the gradient for the resulting brix_smooth values.
+  mutate(
+    m = purrr::map(data, loess, formula = brix ~ index, span = 0.25), # we take 0.25 as it fits nicely so far
+    brix_smooth = purrr::map(m, `[[`, "fitted"),
+    brix_gradient = purrr::map(brix_smooth, pracma::gradient)
+  ) %>% 
+
+  # remove the model variable
+  select(-m) %>%
+
+  # Unnest the data :)
+  tidyr::unnest(cols = c(data, brix_smooth, brix_gradient)) %>% 
+
+  # Get brix_gradient_smooth
+  # ------------------------
+
+  # Nest by ferment_period and get the gradieng in
+  tidyr::nest(data = c(-ferment_period, index, time, brix_smooth, brix_gradient)) %>% 
+
+  # for each ferment_period calculate the loess for their fitted values
+  # and the gradient for the resulting brix_smooth values.
+  mutate(
+    m = purrr::map(data, loess, formula = brix_gradient ~ index, span = 0.25), # trying 0.25 again
+    brix_gradient_smooth = purrr::map(m, `[[`, "fitted")
+  ) %>% 
+
+  # remove the model variable
+  select(-m) %>%
+
+  # Unnest the data :)
+  tidyr::unnest(cols = c(data, brix_gradient_smooth)) %>% 
+
+  # Clean up
+  select(-index) %>% 
+  select(time, brix, brix_smooth, brix_gradient, brix_gradient_smooth, ferment, ferment_bool, ferment_period, ferment_point, ferment_phase) %>% 
+  arrange(time)
+
+```
+
+Check visually:
+
+```{r eval=FALSE}
+
+# Check brix_smooth and brix_gradient make sense.
+df_brix_smooth %>% 
+  filter(ferment_bool) %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix)) +
+    facet_wrap(~ferment_period, scales = "free", nrow = 2)
+
+df_brix_smooth %>%
+  filter(ferment_bool) %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_gradient_smooth), colour = 'steelblue') +
+    facet_wrap(~ferment_period, scales = "free", nrow = 2)
+
+
+```
+
+Add points 2 and 4, the start of phase 2 and the start of phase 3 next. Note, that there can be fermentation curves that skip phase 1 altogether and start with phase 2 straight away. Simple reason being, the smooth brix curve gradient is negative from the start.
+
+```{r}
+
+# Get the times for point (2)
+ferment_curve_start_times <- df_brix_smooth %>% 
+  filter(ferment_bool, brix_gradient < 0) %>% 
+  group_by(ferment_period) %>% 
+  mutate(first = first(brix_gradient)) %>% 
+  ungroup() %>% 
+  select(time, first) %>% 
+  distinct(first, .keep_all = TRUE) %>% 
+  pull(time)
+
+# Get the times for point (4)
+ferment_curve_end_times <- df_brix_smooth %>% 
+  filter(ferment_bool, brix_smooth < 0) %>% 
+  group_by(ferment_period) %>% 
+  mutate(first = first(brix_smooth)) %>% 
+  ungroup() %>% 
+  select(time, first) %>% 
+  distinct(first, .keep_all = TRUE) %>% 
+  pull(time)
+
+# Add them to the `ferment_phase` var.
+df_brix_smooth <- df_brix_smooth %>% 
+  mutate(ferment_point = if_else(time %in% ferment_curve_start_times, "Point 2", ferment_point)) %>% 
+  mutate(ferment_phase = if_else(time %in% ferment_curve_start_times, "Phase 2", ferment_phase)) %>% 
+  mutate(ferment_point = if_else(time %in% ferment_curve_end_times, "Point 4", ferment_point)) %>% 
+  mutate(ferment_phase = if_else(time %in% ferment_curve_end_times, "Phase 3", ferment_phase))
+
+```
+
+#### Detect cell division inflection point
+
+```{r}
+
+# Get the times for point (2)
+inflection_times <- df_brix_smooth %>% 
+  filter(ferment_bool, brix_gradient < 0) %>% 
+  group_by(ferment_period) %>% 
+  fill(ferment_phase) %>% 
+  filter(ferment_phase == 'Phase 2') %>% 
+  slice_min(brix_gradient_smooth) %>% 
+  ungroup() %>% 
+  pull(time)
+
+# Add them to the `ferment_phase` var.
+df_brix_smooth <- df_brix_smooth %>% 
+  mutate(ferment_point = if_else(time %in% inflection_times, "Point 3", ferment_point)) 
+  # Note, that for now, inflection point is still part of phase 2
+
+```
+
+#### Check points and phases
+
+Check for all points over brix visually:
+
+```{r}
+
+# Check ferment start (point 1), end (point 5) and the newly created points 2 and 4 are detected correctly.
+starts <- df_brix_smooth %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df_brix_smooth %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2s <- df_brix_smooth %>% 
+  mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+  pull(check)
+
+point_3s <- df_brix_smooth %>% 
+  mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+  pull(check)
+
+point_4s <- df_brix_smooth %>% 
+  mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+  pull(check)
+
+(p <- df_brix_smooth %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = brix)) + 
+    geom_line(aes(x = time, y = brix_smooth), colour = 'tomato') + 
+    geom_vline(aes(xintercept = starts), colour = 'cornflowerblue') +
+    geom_vline(aes(xintercept = ends), colour = 'maroon') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon')
+)
+
+plotly::ggplotly(p)
+
+```
+
+Check visually by fermentation period:
+
+```{r}
+
+# Check brix_smooth and brix_gradient make sense.
+p1 <- df_brix_smooth %>%
+  # filter(!is.na(ferment_period)) %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix)) +
+    geom_line(aes(y = brix_smooth), colour = 'tomato') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free")
+
+p2 <- df_brix_smooth %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_gradient_smooth), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free")
+  
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+#### Fill the fermentation phases
+
+```{r}
+
+# Fill phases
+df_brix_smooth <- df_brix_smooth %>% 
+  fill(ferment_phase) %>% mutate(ferment_phase = ifelse(ferment_bool, ferment_phase, NA_real_))
+
+```
+
+Finally create a period stamped fermentation phase variable...
+
+```{r}
+
+df_brix_smooth <- df_brix_smooth %>%
+  mutate(
+    ferment_period_phase = ifelse(
+      !is.na(ferment_period) & !is.na(ferment_phase), 
+      paste(ferment_period, ferment_phase), 
+      NA_character_)
+    )
+```
+
+
+
+# Write brix focussed data
+
+This is the result of above wrangle and focuses on brix and the extra fermentation variables.
+
+```{r}
+
+df_brix_smooth %>% write_csv(paste0(path_root, path_data, path_tank, "/clean/df_brix_smooth.csv"), na = "")
+
+```
+
+# Augment original data
+
+Next we augment the original dataset with the extra fermentation variables which requires us to jump through some filling loops - particularly complex for ferment :))
+
+```{r}
+
+df %>% 
+  left_join(df_brix_smooth, by = c("time", "brix")) %>% 
+
+  # Fill vars which are straight fillable
+  fill(brix_smooth, brix_gradient, brix_gradient_smooth, ferment_bool) %>% 
+  
+  # Fill `ferment` which needs drastic filling gymnastics
+  mutate(ferment2 = ferment) %>% 
+  fill(ferment2) %>% 
+  mutate(ferment3 = ifelse(ferment2 == "ferment", ferment2, ferment)) %>% 
+  mutate(ferment3 = case_when(
+    ferment_bool & ferment == "start" ~ "start",
+    ferment_bool & ferment2 == "end" ~ "end",
+    TRUE ~ "ferment"
+  )) %>% 
+  mutate(ferment = ifelse(ferment_bool, ferment3, NA_character_)) %>% 
+  select(-c(ferment2, ferment3)) %>% 
+
+  # Fill ferment_period and ferment_phase which need moderate filling gymnastics
+  fill(ferment_period, ferment_phase, ferment_period_phase) %>% 
+  mutate(ferment_period = ifelse(ferment_bool, ferment_period, NA_character_)) %>%
+  mutate(ferment_phase = ifelse(ferment_bool, ferment_phase, NA_character_)) %>%
+  mutate(ferment_period_phase = ifelse(ferment_bool, ferment_period_phase, NA_character_)) %>%
+  
+  # Fill ferment_point which needs a moderate+ amount of filling acrobatics
+  mutate(ferment_point2 = ferment_point) %>% 
+  fill(ferment_point2) %>% 
+  mutate(ferment_point = ifelse(ferment_bool & ferment_point2 == "Point 5", "Point 5", ferment_point)) %>% 
+  select(-ferment_point2) %>% 
+
+  # Test write
+  write_csv(paste0(path_root, path_data, path_tank, "/clean/df_clean_ferment.csv"), na = "")
+
+```
+

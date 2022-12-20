@@ -1,0 +1,889 @@
+---
+title: "Data v3 Analysis"
+output: html_notebook
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+```
+
+
+# Functions
+
+```{r}
+
+graph_central_values <- function(df, var, var_name, rounding = 0, y = "Values") {
+  var_enquo = enquo(var)
+  
+  # Get the data range for normalised nudge_* values
+  vector <- df %>% pull(!!var_enquo)
+  dist <- range(vector)[2] - range(vector)[1]
+  nudge <- dist / 25
+  
+  # Get the data
+  data <- df %>% 
+    group_by(ferment_period) %>% 
+    summarise(
+      Average = mean(!!var_enquo),
+      Median = median(!!var_enquo),
+      Min = min(!!var_enquo),
+      Max = max(!!var_enquo),
+    )
+  
+  # Plot
+  p <- ggplot(data) +
+    geom_pointrange(aes(x = ferment_period, y = Median, ymin = Min, ymax = Max, colour = ferment_period), shape = 3) +
+    geom_point(aes(x = ferment_period, y = Average, colour = ferment_period), size = 3) +
+    geom_text(aes(x = ferment_period, y = Median, label = paste("Median: ", round(Median, digits = rounding))),
+              size = 3, hjust = "left", nudge_x = 0.05, colour = "#777777") +
+    geom_text(aes(x = ferment_period, y = Average, label = paste("Avg: ", round(Average, digits = rounding)), colour = ferment_period),
+              size = 3, hjust = "right", nudge_x = -0.05, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Min, label = round(Min, digits = rounding), 
+                  colour = ferment_period), size = 3, vjust = "top", nudge_y = -nudge, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Max, label = round(Max, digits = rounding), 
+                  colour = ferment_period),size = 3, vjust = "bottom", nudge_y = nudge, fontface = "bold") +
+    labs(title = paste0(var_name, ": central values and range"),
+         subtitle = "Fermentation vs non-fermentation",
+         x = "", y = y) +
+    theme(legend.position="none")
+  
+    print(p)
+}
+
+```
+
+```{r}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+graph_series <- function(df, title = "Tank D1 series", plotly = TRUE) {
+
+  chart <- df %>% 
+    ggplot(aes(x = time)) +
+        # Specificaly set `label` to also show the non-scaled status.
+        geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+        geom_line(aes(y = setpoint, colour = "setpoint")) +
+        geom_line(aes(y = temp, colour = "temp")) +
+        scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+        scale_y_continuous(
+          name = "Temperatures",
+          sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status"),
+          limits = c(0, 150)
+        ) +
+        scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month") +
+        labs(title = title, x = "Time")
+    
+    # Show chart
+  if (plotly) {
+    plotly_chart <- ggplotly(chart) %>% 
+      layout(title = title)
+    
+    print(plotly_chart)
+  } else {
+    print(chart)
+  }
+    
+}
+
+```
+
+```{r}
+
+graph_scatter <- function(df, x, y, title = "title", x_lab = "x", y_lab = "y") {
+
+  x_enquo <- enquo(x)
+  y_enquo <- enquo(y)
+
+  p <- ggplot(data = df, aes(x = !!x_enquo, y = !!y_enquo, label = pulse_group)) +
+    geom_point(aes(colour = ferment_period)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment_period, scales = "free_x") +
+    labs(title = title, x = x_lab, y = y_lab) +
+    theme(legend.position = "none")
+
+  ggplotly(p)  
+}
+
+```
+
+```{r}
+
+graph_density <- function(df, x_var, fill_var, title = "Density", x = "x", y = "y", fill_values = FALSE, colour_values = FALSE) {
+  x_var_enquo = enquo(x_var)
+  fill_var_enquo = enquo(fill_var)
+
+  p <- ggplot(df) +
+    geom_density(aes(x = !!x_var_enquo, fill = !!fill_var_enquo, ..count..), alpha = 0.5, colour = "#555555") +
+    theme(legend.title = element_blank()) +
+    labs(title = title,x = x, y = y)
+  
+  if (fill_values != FALSE && colour_values != FALSE) {
+    p <- p + scale_fill_manual(breaks = fill_values, values = colour_values)
+  }
+  
+  print(p)
+}
+
+```
+
+
+```{r}
+
+# Read main data
+df <- read_csv(paste0(root_path, "/data/v3/pulse/df-pulse.csv"), col_types = cols(pulse = "c", pulse_group = "c"))
+
+# Set status labels
+df <- df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "0 - error",
+    status == 1 ~ "1 - off",
+    status == 2 ~ "2 - on (not cooling)",
+    status == 3 ~ "3 - on (cooling)",
+    status == 10 ~ "10 - low temp alarm (not cooling)",
+    status == 11 ~ "11 - low low temp alarm (not cooling)",
+    status == 12 ~ "12 - high temp alarm (cooling)",
+    status == 13 ~ "13 - high high temp alarm (cooling)",
+    status == 14 ~ "14 - low temp alarm (not cooling)",
+    status == 15 ~ "15 - low low temp alarm (not cooling)",
+    status == 16 ~ "16 - high temp alarm (cooling)",
+    status == 17 ~ "17 - high high temp alarm (cooling)",
+  ))
+
+# Set fermentation periods
+df <- df %>% 
+  mutate(ferment = case_when(
+    time >= ymd_hms("2021-09-16 19:44:16") & time <= ymd_hms("2021-09-23 12:10:51") ~ "Sep-09",
+    time >= ymd_hms("2021-10-04 18:22:17") & time <= ymd_hms("2021-10-10 00:55:03") ~ "Oct-04",
+    time >= ymd_hms("2021-10-19 08:07:31") & time <= ymd_hms("2021-10-26 18:36:02") ~ "Oct-19",
+    TRUE ~ "no-ferment"
+  )) %>% 
+  mutate(
+    ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE),
+    ferment_period = ifelse(ferment == "no-ferment", "No Fermentation", "Fermentation"),
+  )
+
+```
+
+The base data includes all events recorded for tank D1 in the full year 2021. Each row represents data for one event. An event is a change in either the `status`, the `setpoint` or the `temperature`.
+
+The following analysis does three things:
+
+1. It first describes the full dataset and its variables comparing fermentation with non-fermentation periods
+
+2. It produces and describes a derived dataset - each row representing a pulse period. A pulse period is just a series of continuous pulses. This is a much more focussed analysis as it focuses on the pulse cooling removing all outlier producing non-events like empty tanks.
+
+3. Lastly, we analyse associations between pulse period characteristics - specifically between pulse period durations as well as pulse intensity on the one side and temperature changes and temperature rate of changes on the other side.
+
+# The event data
+
+Here's the full dataset as a time-series showing <span style="color:darkorange">temperature</span>, <span style="color:steelblue">setpoint</span> and  <span style="color:#777">status</span>. 
+
+We also mark the three fermentation periods:
+
+1. Fermentation 1 from 2021-09-16 19:44:16 to 2021-09-23 12:10:51
+2. Fermentation 2 from 2021-10-04 18:22:17 to 2021-10-10 00:55:03
+3. Fermentation 3 from 2021-10-19 08:07:31 to 2021-10-26 18:36:02
+
+```{r}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+chart_full_year <- ggplot(df, aes(x = time)) +
+  # Set fermentation periods.
+   annotate(geom = "rect", xmin = ymd_hms("2021-09-16 19:44:16"), xmax = ymd_hms("2021-09-23 12:10:51"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+   annotate(geom = "rect", xmin = ymd_hms("2021-10-04 18:22:17"), xmax = ymd_hms("2021-10-10 00:55:03"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+   annotate(geom = "rect", xmin = ymd_hms("2021-10-19 08:07:31"), xmax = ymd_hms("2021-10-26 18:36:02"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+
+  # Specificaly set `label` to also show the non-scaled status.
+  geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status"),
+    limits = c(0, 150)
+  ) +
+  scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month") +
+  labs(title = "Tank D1 temperature, status and setpoint developments 2021",
+       subtitle = "Red areas indicate fermentation periods",
+       x = "Time")
+
+chart_full_year
+
+# Show chart
+ggplotly(chart_full_year) %>% 
+  layout(title = list(text = paste0('Tank D1 temperature, status and setpoint developments 2021',
+                                    '<br>',
+                                    '<sup>',
+                                    'Red areas indicate fermentation periods',
+                                    '</sup>')))
+
+```
+
+
+## Deta profile
+
+The time series shows the development, the peaks and troughs over time. In the following we'll describe  each variable, count their categories and show their averages.
+
+As there's a conceptual difference between **non-fermentation** and **fermentation** periods, we'll split the data profile into fermentation vs no fermentation.
+
+### Temperature and Setpoint
+
+```{r}
+
+graph_central_values(df, temp, "Temperature", 0, "°F")
+graph_central_values(df, setpoint, "Setpoint", 0, "°F")
+
+```
+
+### Status
+
+```{r}
+
+# We need this to order the table
+status_order <- c(
+  "0 - error",
+  "1 - off",
+  "2 - on (not cooling)",
+  "3 - on (cooling)",
+  "10 - low temp alarm (not cooling)",
+  "11 - low low temp alarm (not cooling)",
+  "12 - high temp alarm (cooling)",
+  "13 - high high temp alarm (cooling)",
+  "14 - low temp alarm (not cooling)",
+  "15 - low low temp alarm (not cooling)",
+  "16 - high temp alarm (cooling)",
+  "17 - high high temp alarm (cooling)"
+)
+
+# Data
+(f <- df %>% 
+  group_by(ferment_period, status_label) %>% 
+  summarise(seconds = sum(diff, na.rm = TRUE), count = n()) %>% 
+  mutate(hours = seconds / 60 / 60, percent = round(seconds / sum(seconds),3)) %>% 
+  ungroup())
+
+# Plot
+ggplot(f) +
+  geom_bar(aes(x = status_label, y = percent, fill = ferment_period), stat = "identity") +
+  geom_text(aes(x = status_label, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            hjust = "left", nudge_y = 0.02, size = 3, fontface = "bold") +
+  scale_y_continuous(limits = c(0, max(f$percent) * 1.3), labels = scales::percent) +
+  coord_flip() +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Status: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "Status categories", y = "") +
+  theme(legend.position="none") +
+  scale_x_discrete(limits = rev(status_order))
+
+
+```
+
+
+```{r}
+
+# We need this to order the table
+status_order <- c(
+  "0 - error",
+  "1 - off",
+  "2 - on (not cooling)",
+  "3 - on (cooling)",
+  "10 - low temp alarm (not cooling)",
+  "11 - low low temp alarm (not cooling)",
+  "12 - high temp alarm (cooling)",
+  "13 - high high temp alarm (cooling)",
+  "14 - low temp alarm (not cooling)",
+  "15 - low low temp alarm (not cooling)",
+  "16 - high temp alarm (cooling)",
+  "17 - high high temp alarm (cooling)"
+)
+
+# Data
+(f <- df %>% 
+  group_by(ferment_period, status_label) %>% 
+  summarise(count = n()) %>% 
+  mutate(percent = round(count / sum(count),3)) %>% 
+  arrange(match(status_label, status_order), status_label) %>% 
+  arrange(ferment_period) %>% 
+  ungroup())
+
+# Plot
+ggplot(f) +
+  geom_bar(aes(x = reorder(status_label, percent), y = percent, fill = ferment_period), stat = "identity") +
+  geom_text(aes(x = status_label, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            hjust = "left", nudge_y = 0.02, size = 3, fontface = "bold") +
+  scale_y_continuous(limits = c(0, max(f$percent) * 1.25)) +
+  coord_flip() +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Status: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "Status categories", y = "") +
+  theme(legend.position="none")
+
+```
+
+### Days
+
+```{r}
+
+df <- df %>% 
+  mutate(wday_fct = factor(wday, levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")))
+  
+f <- df %>% 
+  group_by(ferment_period, wday_fct) %>% 
+  summarise(count = n()) %>% 
+  mutate(percent = round(count / sum(count),3))
+  
+ggplot(f) +
+  geom_bar(aes(x = reorder(wday_fct, desc(wday_fct)), y = percent, fill = ferment_period), stat = "identity") +
+  geom_text(aes(x = wday_fct, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            hjust = "left", nudge_y = 0.01, size = 3, fontface = "bold") +
+  scale_y_continuous(limits = c(0, max(f$percent) * 1.25)) +
+  coord_flip() +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Weekday: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "", y = "") +
+  theme(legend.position="none")
+
+```
+
+### Day in month
+
+```{r}
+
+(f <- df %>% 
+  group_by(ferment_period, day) %>% 
+  summarise(count = n()) %>% 
+  mutate(percent = round(count / sum(count),3)))
+  
+ggplot(f) +
+  geom_bar(aes(x = day, y = percent, fill = ferment_period), stat = "identity") +
+  # geom_text(aes(x = day, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            # hjust = "left", nudge_y = 0.02, size = 3, fontface = "bold") +
+  # coord_flip() +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Day: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "", y = "") +
+  theme(legend.position="none")
+
+```
+
+### Month
+
+```{r}
+
+df <- df %>% 
+  mutate(month_fct = factor(month, levels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")))
+  
+f <- df %>% 
+  group_by(ferment_period, month_fct) %>% 
+  summarise(count = n()) %>% 
+  mutate(percent = round(count / sum(count),3))
+  
+ggplot(f) +
+  geom_bar(aes(x = month_fct, y = percent, fill = ferment_period), stat = "identity") +
+  geom_text(aes(x = month_fct, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            hjust = "centre", nudge_y = 0.025, size = 3, fontface = "bold") +
+  scale_y_continuous(limits = c(0, max(f$percent) * 1.25)) +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Month: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "", y = "") +
+  theme(legend.position="none")
+
+```
+
+### Hour
+
+```{r}
+
+(f <- df %>% 
+  group_by(ferment_period, hour) %>% 
+  summarise(count = n()) %>% 
+  mutate(percent = round(count / sum(count),3)))
+  
+ggplot(f) +
+  geom_bar(aes(x = hour, y = percent, fill = ferment_period), stat = "identity") +
+  # geom_text(aes(x = hour, y = percent, label = scales::percent(percent, accuracy = 1), colour = ferment_period), 
+            # hjust = "left", nudge_y = 0.02, size = 3, fontface = "bold") +
+  # coord_flip() +
+  facet_wrap(~ ferment_period) +
+  labs(title = "Hour: frequencies",
+     subtitle = "Fermentation vs non-fermentation",
+     x = "", y = "") +
+  theme(legend.position="none")
+
+```
+
+# The pulse data
+
+In a next step we produce a dataset that just focusses on th epulse cooling periods. Each row in this dataset is a pulse cooling period and each variable summarises a specific pulse period characteristic:
+
+```{r}
+
+# Number of modulations.
+pulse_num <- df %>% 
+  group_by(pulse_group) %>% 
+  count() %>% 
+  mutate(pulse_group_start = parse_date_time(pulse_group, orders = "d/m/Y H:M")) %>% 
+  arrange(pulse_group_start) %>% 
+  ungroup()
+
+# Main pulse period data.
+df_pulse <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment_bool, ferment, pulse, pulse_group, temp) %>% 
+  mutate(ferment_period = ifelse(ferment_bool, "Fermentation", "No Fermentation")) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA)) %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(pulse == "start") %>% 
+  select(-pulse) %>%
+  left_join(pulse_num %>% select(pulse_group, pulse_number = n), by = "pulse_group") %>% 
+  mutate(pulse_frequency = pulse_number / pulse_duration) %>% 
+  mutate(roc = temp_diff / (pulse_duration/60))  # temperature change per hour (pulse_duration is in minutes, hence /60 is in hours)
+
+# Remove pulse groups with low single modulation
+df_pulse <- df_pulse %>% 
+  filter(pulse_group != "19/09/2021 12:16" & pulse_group != "23/09/2021 10:37")
+
+# Modulation summary variables.
+df_modulation <- df %>% 
+  # filter(!is.na(pulse), ferment_bool) %>% 
+  filter(!is.na(pulse)) %>%
+  mutate(
+    status_diff_2 = ifelse(status == 2, diff, NA_real_),
+    status_diff_3 = ifelse(status == 3, diff, NA_real_)
+  ) %>% 
+  group_by(pulse_group) %>% 
+  summarise(
+    pulse_dur_2_mean_sec = mean(status_diff_2, na.rm = TRUE),
+    pulse_dur_3_mean_sec = mean(status_diff_3, na.rm = TRUE),
+    pulse_duration_2 = sum(status_diff_2, na.rm = TRUE) / 60,
+    pulse_duration_3 = sum(status_diff_3, na.rm = TRUE) / 60,
+  ) %>% 
+  mutate(
+    cooling_percent_mean = pulse_dur_3_mean_sec / (pulse_dur_2_mean_sec + pulse_dur_3_mean_sec),
+    cooling_percent = pulse_duration_3 / (pulse_duration_2 + pulse_duration_3),
+  ) %>% 
+  ungroup()
+
+# Add modulation variables to main data. 
+(df_pulse <- df_pulse %>%
+  left_join(df_modulation, by = "pulse_group") %>% 
+  select(
+    time,
+    ferment_bool,
+    ferment_period,
+    ferment,
+    pulse_group,
+    temp,
+    temp_diff,
+    pulse_duration,
+    roc,
+    pulse_dur_2_mean_sec,
+    pulse_dur_3_mean_sec,
+    cooling_percent,
+    pulse_duration_2,
+    pulse_duration_3,
+    pulse_number,
+    pulse_frequency,
+  ))
+
+```
+
+## Number of pulses
+
+```{r}
+
+# Get ferment v no-ferment data.
+(f <- df_pulse %>% 
+  group_by(ferment_period) %>% 
+  count() %>% 
+  ungroup())
+
+# Chart.
+ggplot(f) +
+  geom_bar(aes(x = ferment_period, y = n, fill = ferment_period), stat = "identity") +
+  geom_text(aes(x = ferment_period, y = n, label = n, colour = ferment_period), fontface = "bold", nudge_y = 10) +
+  labs(
+    title = "Number of pulse periods",
+    subtitle = "Fermentation vs Non-fermentation",
+    x = "", y =""
+  ) +
+  theme(legend.position = "none")
+  
+
+# Prep correct order of fermentation periods
+period_order <- c("Sep-09", "Oct-04", "Oct-19", "no-ferment")
+
+# Get fermentation period data.
+f <- df_pulse %>% 
+  group_by(ferment) %>% 
+  count() %>% 
+  ungroup() %>% 
+  arrange(match(ferment, period_order), ferment)
+
+# Chart.
+ggplot(f) +
+  geom_bar(aes(x = ferment, y = n, fill = ifelse(ferment == "no-ferment", "no", "yes")), stat = "identity") +
+  geom_text(aes(x = ferment, y = n, label = n, colour = ifelse(ferment == "no-ferment", "no", "yes")), fontface = "bold", nudge_y = 10) +
+  labs(
+    title = "Number of pulse periods",
+    subtitle = "by fermentation periods",
+    x = "", y =""
+  ) +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("no" = "#CCCCCC", "yes" = "#555555")) +
+  scale_colour_manual(values = c("no" = "#aaaaaa", "yes" = "#555555"))
+
+```
+
+## Pulse frequency
+
+```{r}
+
+df_pulse %>% filter(ferment_bool) %>% summarytools::descr(pulse_frequency)
+df_pulse %>% filter(!ferment_bool) %>% summarytools::descr(pulse_frequency)
+
+df_pulse %>% graph_central_values(pulse_frequency, "Pulse Frequency", 2)
+df_pulse %>% graph_density(pulse_frequency, ferment_period, "Density of Pulse Frequency", "Number of Pulses per Minute", "Count")
+
+df_pulse %>% filter(ferment_bool) %>% graph_central_values(pulse_frequency, "Pulse Frequency", 2)
+df_pulse %>% filter(ferment_bool) %>% graph_density(pulse_frequency, ferment_period, "Density of Pulse Frequency", "Number of Pulses per Minute", "Count")
+
+```
+
+Pulse frequencies have a small variance with a Median of 1.13 and a Std Dev of 0.07. 
+
+
+## Temperature
+
+Starting temperature and delta
+
+```{r}
+
+graph_central_values(df_pulse, temp, "Temperature")
+graph_central_values(df_pulse, temp_diff, "Temperature delta", 2)
+
+graph_density(df_pulse, temp_diff, ferment_period, "Temperature Change frequencies", "change in °F", "Count")
+
+```
+
+
+## Pulse Duration
+
+```{r}
+
+graph_central_values(df_pulse, pulse_duration, "Pulse Duration (in minutes)")
+
+p <- df_pulse %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -pulse_duration), y = pulse_duration, fill = ferment_period), stat = "identity") +
+    facet_wrap(~ ferment_period) +
+    labs(title="Pulse duration | non-fermentation v fermentation", x = "pulse group")
+
+ggplotly(p)
+
+```
+
+```{r}
+
+p <- df_pulse %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -pulse_duration), y = pulse_duration, fill = ferment), stat = "identity") +
+    facet_wrap(~ ferment) +
+    labs(title="Pulse duration | non-fermentation v fermentation", x = "pulse group")
+
+ggplotly(p)
+
+graph_density(df_pulse, pulse_duration, ferment_period, "Density of Pulse Duration", "Pulse Duration in Minutes", "Count")
+
+
+```
+
+
+```{r}
+summarytools::descr(df_pulse)
+```
+
+## Temperature rate of change
+
+Only during fermentation
+
+```{r}
+
+graph_central_values(df_pulse, roc, "ROC (in °F per hour)", 2, "°F per hour")
+
+p <- df_pulse %>% 
+  filter(ferment_bool) %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -roc), y = roc), stat = "identity") +
+    labs(title="Pulse duration | non-fermentation v fermentation", x = "pulse group")
+
+ggplotly(p)
+
+
+df_pulse %>% graph_density(roc, ferment_period, "Temperature Rate of Change frequencies", "°F change per hour", "Count")
+df_pulse %>% filter(ferment_bool) %>% graph_density(roc, ferment_period, "Temperature Rate of Change frequencies", "°F change per hour", "Count")
+
+```
+
+Check the positives
+
+```{r}
+
+roc_pos <- df_pulse %>% 
+  filter(roc > 0, ferment_bool) %>% 
+  pull(pulse_group)
+
+df %>% 
+  filter(pulse_group %in% roc_pos)
+  
+```
+
+
+
+```{r}
+
+for (num in seq(length(roc_pos))) {
+  df %>% 
+    filter(pulse_group == roc_pos[num]) %>% 
+    graph_series(paste("Pulse group", roc_pos[num]))
+}
+
+
+```
+
+Turns out they are based on small differences and/or short pulses:
+
+```{r}
+
+df_pulse %>% 
+  filter(roc > 0, ferment_bool) %>% 
+  select(pulse_duration, temp_diff) %>% 
+  summarytools::descr()
+
+```
+
+## Pulse duration per status
+
+Average pulse duration per status
+
+### Average durations
+
+```{r}
+
+graph_central_values(df_pulse, pulse_dur_2_mean_sec, "Avg pulse duration in seconds - non cooling (status == 2)")
+graph_central_values(df_pulse, pulse_dur_3_mean_sec, "Avg pulse duration in seconds - cooling (status == 3)")
+
+t <- df_pulse %>% 
+  select(`Status 2 duration avg` = pulse_dur_2_mean_sec, `Status 3 duration  avg` = pulse_dur_3_mean_sec) %>% 
+  pivot_longer(cols = everything(), names_to = "duration_mean", values_to = "values")
+
+graph_density(t, values, duration_mean, "Comparing average status durations per pulse period", "Pulse Duration in Seconds", "Density")
+  
+t <- df_pulse %>% 
+  filter(ferment_bool) %>% 
+  select(`Status 2 duration avg` = pulse_dur_2_mean_sec, `Status 3 duration avg` = pulse_dur_3_mean_sec) %>% 
+  pivot_longer(cols = everything(), names_to = "duration_mean", values_to = "values")
+
+graph_density(t, values, duration_mean, 
+              "Comparing average status durations per pulse period", "Avg. Pulse Duration in Seconds", "Count",
+              fill_values = unique(t$duration_mean), colour_values = c("grey", "lightskyblue"))
+
+
+```
+### Total durations
+
+```{r}
+
+graph_central_values(df_pulse, pulse_dur_2_mean_sec, "Avg pulse duration in seconds - non cooling (status == 2)")
+graph_central_values(df_pulse, pulse_dur_3_mean_sec, "Avg pulse duration in seconds - cooling (status == 3)")
+
+t <- df_pulse %>% 
+  select(`Status 2 duration` = pulse_duration_2, `Status 3 duration` = pulse_duration_3) %>% 
+  pivot_longer(cols = everything(), names_to = "duration", values_to = "values")
+
+graph_density(t, values, duration, "Comparing total status durations per pulse period", "seconds", "Density")
+  
+```
+
+## Cooling percent
+
+Percentage a pulse period is cooling.
+
+```{r}
+
+# Central values.
+graph_central_values(df_pulse, cooling_percent, "Percentage a pulse period is cooling", 2, "Percent (1 = 100%)")
+
+# Ferment vs no ferment.
+df_pulse %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -cooling_percent), y = cooling_percent, fill = ferment_period), stat = "identity") +
+    facet_wrap(~ ferment_period)
+
+# Fermentation periods.
+df_pulse %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -cooling_percent), y = cooling_percent, fill = ferment_period), stat = "identity") +
+    facet_wrap(~ ferment)
+  
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  ggplot() +
+    geom_density(aes(x = cooling_percent, fill = ferment_period, ..count..), alpha = 0.5, colour = "#555555") +
+    theme(legend.title = element_blank()) +
+    labs(title = "Hello",x = "x", y = "y")
+  
+  # if (fill_values != FALSE && colour_values != FALSE) {
+  #   p <- p + scale_fill_manual(breaks = fill_values, values = colour_values)
+  # }
+    
+
+```
+
+# Regressions
+
+Checking the explanatory value on temperature changes:
+
+```{r}
+
+# Cooling percent on temp diff effects
+lm_fit <- lm(temp_diff ~ cooling_percent, data = df_pulse %>% filter(ferment_bool, temp_diff < 0))
+summary(lm_fit)
+
+# Pulse duration on ROC effects
+lm_fit <- lm(roc ~ pulse_duration, data = df_pulse %>% filter(ferment_bool, roc < 0))
+summary(lm_fit)
+
+# Pulse frequency on ROC effects
+lm_fit <- lm(roc ~ pulse_frequency, data = df_pulse %>% filter(ferment_bool, roc < 0))
+summary(lm_fit)
+
+df_pulse %>% filter(ferment_bool, roc < 0) %>% 
+  graph_scatter(pulse_frequency, roc, "Pulse Frequency vs ROC", "Pulse Frequency in Pulses per Minute", "ROC in °F per hour")
+
+
+```
+
+
+- Cooling percent has a small negative effect on temp diff (the higher the cooling percent, the lower the temp dff) - this is what we want.
+- Pulse duration has a tiny positive effect on ROC (the higher the pulse duration, the higher the ROC). This is not what we want but can be explained with the fact that long pulse durations are triggered as the temperature is hard to bring down. Hence they have to work harder and will have a lower ROC than short but successfull pulse periods.
+- Pulse frequency has a quite large (if weakly significant) effect on the ROC. We can decrease the ROC by ~5 when increasing the pulse frequency by one unit (one pulse per minute).
+
+Note, we tested multivariate models with duration and cooling percent on temp diff and roc, but there's [multicollinearity](https://www.analyticsvidhya.com/blog/2020/03/what-is-multicollinearity/) between all independents. So the univariate regressions we're using here are the only ones that show effects.
+
+However, note that we have to keep in mind that these effects can't be viewed in isolation as all independents work together.
+
+# Associations
+
+Let's see if we can infer associations visually.
+
+## Impact of duration on temperature change
+
+```{r}
+
+df_pulse %>% 
+  graph_scatter(pulse_duration, temp_diff, 
+                "Impact of Pulse Duration on Temperature Change", "Pulse Duration in Minutes", "Temperature Difference in °F")
+
+```
+
+Check the positive fermentation pulse periods and if they are wildly off.
+
+```{r}
+temp_diff_pos <- df_pulse %>% 
+  filter(ferment_bool, temp_diff > 0) %>% 
+  pull(pulse_group)
+
+
+for (value in temp_diff_pos) {
+  df %>% 
+    filter(pulse_group == value) %>% 
+    graph_series(paste("Pulse group", value), plotly = FALSE)
+}
+
+```
+
+They are not.
+
+General outcome: find sweet spot (between ~35 and ~80 minutes)
+
+## Impact of duration on ROC
+
+```{r}
+
+df_pulse %>% 
+  graph_scatter(pulse_duration, roc,
+                "Impact on pulse duration on the rate of temp change", "Pulse duration in minutes", "ROC in °F per hour")
+
+```
+
+Nope
+  
+## Impact of cooling intensity on temperature change
+
+```{r}
+
+df_pulse %>% 
+  graph_scatter(cooling_percent, temp_diff,
+                "Impact on cooling intensity on the temp change", "% of cooling during pulse period", "Temperature change in °F")
+
+```
+
+
+## Impact of cooling intensity on ROC
+
+```{r}
+
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  graph_scatter(cooling_percent, roc,
+                "Impact on cooling intensity on the rate of temp change", "% of cooling during pulse period", "Rate of temperature change in °F")
+
+```
+
+## Pulse frequency on ROC
+
+```{r}
+
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  graph_scatter(pulse_frequency, roc,
+                "Impact on cooling intensity on the rate of temp change", "% of cooling during pulse period", "Rate of temperature change in °F")
+
+
+```
+

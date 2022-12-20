@@ -1,0 +1,324 @@
+---
+title: "Caymus"
+output: html_notebook
+---
+
+```{r eval=FALSE}
+install.packages('tidyverse')
+install.packages('visdat')
+install.packages('skimr')
+install.packages("gridExtra")
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+```
+
+
+# D1 tank
+
+Let's get the data in and join it for D1 first
+
+```{r}
+# Test
+# t <- readxl::read_xlsx('../data/raw/D1/D1Jan2021.xlsx')
+
+# Get file names > remove unwanted files > get file_paths
+files <- list.files(path = '../data/raw/D1')
+
+files_clean <- tibble(file_name = files) %>% 
+  filter(!str_starts(file_name, '~')) %>% # remove open books
+  filter(str_detect(file_name, '2021.xlsx')) %>% # keep correctly named files
+  pull(file_name)
+
+file_paths <- sapply(files_clean, function(file) { paste0('../data/raw/D1/', file)  }, USE.NAMES = FALSE)
+
+
+# Read in all files > join them
+df_list <- lapply(file_paths, readxl::read_xlsx)
+df_orig <- bind_rows(df_list) %>% as_tibble()
+names(df_orig)
+```
+
+Some recoding
+
+```{r}
+# Remove brix (not needed).
+df_orig <- df_orig %>% select(-brix)
+
+# Add date vars.
+(df_orig <- df_orig %>% 
+  mutate(
+    year = lubridate::year(t_stamp),
+    month = lubridate::month(t_stamp, label = TRUE),
+    day = lubridate::mday(t_stamp),
+    wday = lubridate::wday(t_stamp, label = TRUE)
+  ))
+```
+
+Summary
+
+```{r eval=FALSE}
+skimr::skim(df_orig)
+```
+
+What is `pulsing`?
+
+```{r eval=FALSE}
+df_orig %>% 
+  mutate(pulse_bool = !is.na(pulsing)) %>% 
+  group_by(pulse_bool) %>% 
+  count()
+
+df_orig %>% 
+  filter(!is.na(pulsing)) %>% 
+  group_by(month, wday) %>% 
+  count()
+
+df_orig %>% 
+  filter(!is.na(pulsing)) %>% 
+  group_by(pulsing) %>% 
+  count()
+```
+
+Got added in Nov - is 0.
+
+Remove duplicates
+
+```{r}
+# Duplicates
+(dupes <- df_orig %>% 
+  group_by(t_stamp, year, month, day, wday, sp, eng, state) %>% 
+  count() %>% 
+  ungroup() %>% 
+  arrange(desc(n)))
+
+df <- dupes %>% 
+  filter(n == 1) %>% 
+  select(-n)
+
+df_orig %>% 
+  group_by(t_stamp) %>% 
+  count() %>% 
+  arrange(desc(n), desc(t_stamp))
+```
+
+Remove missing timestamps
+
+```{r}
+# Missings check > filter out
+(df <- df %>% 
+  filter(!is.na(t_stamp)))
+
+df %>% summary()
+```
+
+Check each months has enough rows/quarter hours
+
+```{r}
+
+# Month distribution
+df %>% 
+  group_by(month) %>% 
+  count() 
+
+# Check if we have the correct number of rows (quarter hours) per month
+days_per_mth <- tibble(
+  month = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+  days = c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+)
+
+days_per_mth <- days_per_mth %>% 
+  mutate(quarter_hrs = days * 24 * 4)
+
+df_check_mths <- df %>% 
+  group_by(month) %>% 
+  count() %>% 
+  ungroup() %>% 
+  left_join(days_per_mth, by = "month") %>% 
+  mutate(diff = n - quarter_hrs)
+  
+df_check_mths
+
+```
+
+There were some irregularities, duplicates and holes which were fixed in the script `fix_months.Rmd`
+
+Let's have a look
+
+```{r eval=FALSE}
+df %>% 
+  ggplot(aes(x = t_stamp)) + 
+    geom_line(aes(y = eng), colour = "steelblue") +
+    geom_line(aes(y = sp), colour = "orange") +
+    # geom_line(aes(y = brix), colour = "darkseagreen") +
+    # geom_line(aes(y = state), colour = "red") +
+    facet_wrap(vars(month), scales = "free")
+
+```
+
+```{r eval=FALSE}
+visdat::vis_dat(df)
+```
+
+Name the frame for use in other scripts
+
+```{r}
+df_d1_prepped <- df
+```
+
+
+---
+
+# F2 tank
+
+Let's look at the F1 tank next
+
+```{r}
+# Get file names > get file_paths
+files <- list.files(path = '../data/raw/F2')
+file_paths <- sapply(files, function(file) { paste0('../data/raw/F2/', file)  }, USE.NAMES = FALSE)
+
+# Read in all files > join them
+df_list <- lapply(file_paths, readxl::read_xlsx)
+df_orig <- bind_rows(df_list) %>% as_tibble()
+names(df_orig)
+```
+
+Some recoding
+
+```{r}
+# Add date vars.
+df_orig <- df_orig %>% 
+  mutate(
+    year = lubridate::year(t_stamp),
+    month = lubridate::month(t_stamp, label = TRUE),
+    day = lubridate::mday(t_stamp),
+    wday = lubridate::wday(t_stamp, label = TRUE)
+  )
+```
+
+Summary
+
+```{r}
+skimr::skim(df_orig)
+```
+
+No `brix`?
+
+What is `pulsing`?
+
+```{r}
+df_orig %>% 
+  mutate(pulse_bool = !is.na(pulsing)) %>% 
+  group_by(pulse_bool) %>% 
+  count()
+
+df_orig %>% 
+  filter(!is.na(pulsing)) %>% 
+  group_by(month, day) %>% 
+  count()
+
+df_orig %>% 
+  filter(!is.na(pulsing)) %>% 
+  group_by(pulsing) %>% 
+  count()
+```
+
+Let's check for duplicates (across all var's and the `t_stamp` in particular)
+
+```{r}
+# Duplicates
+(dupes <- df_orig %>% 
+  group_by(t_stamp, year, month, day, sp, eng, state) %>% 
+  count() %>% 
+  ungroup() %>% 
+  arrange(desc(n)))
+
+df <- dupes %>% 
+  filter(n == 1) %>% 
+  select(-n)
+
+df_orig %>% 
+  group_by(t_stamp) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  filter(n > 1)
+```
+
+...and the missings:
+
+```{r}
+# Missings check > filter out
+df %>% 
+  filter(is.na(t_stamp))
+
+(df <- df %>% 
+  filter(!is.na(t_stamp)))
+```
+
+Now, let's see if there are the correct number of rows per month
+
+```{r}
+# Month distribution
+df %>% 
+  group_by(month) %>% 
+  count() 
+
+# Check if we have the correct number of rows (quarter hours) per month
+days_per_mth <- tibble(
+  month = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+  days = c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+)
+
+days_per_mth <- days_per_mth %>% 
+  mutate(quarter_hrs = days * 24 * 4)
+
+df_check_mths <- df %>% 
+  group_by(month) %>% 
+  count() %>% 
+  ungroup() %>% 
+  left_join(days_per_mth, by = "month") %>% 
+  mutate(diff = n - quarter_hrs)
+  
+df_check_mths
+
+```
+
+Let's also check if all the quarter hours are actually a quarter hour apart 
+
+```{r}
+
+# Compare each row's t_stamp with the previous row's t_stamp value.
+lag_check <- df %>% 
+  mutate(diff = t_stamp - lag(t_stamp - 1)) 
+
+lag_check %>% 
+  group_by(diff) %>% 
+  count()
+
+```
+
+
+There were some issues, duplicates and whole which have been explored in the fix_months.Rmd script and repaired manually in the F1 excels.
+
+Let's have a look
+
+```{r}
+
+df %>% 
+  ggplot(aes(x = t_stamp)) + 
+    geom_line(aes(y = eng), colour = "steelblue") +
+    geom_line(aes(y = sp), colour = "orange") +
+    # geom_line(aes(y = state), colour = "red") +
+    facet_wrap(vars(month), scales = "free")
+
+```
+
+```{r}
+visdat::vis_dat(df)
+```
+

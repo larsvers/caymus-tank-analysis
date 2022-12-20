@@ -1,0 +1,301 @@
+---
+title: "Load data v2"
+output: html_notebook
+---
+
+This file is loading in and prepping the new datasets - after we had multiple sources for `sp` and `state` in the v1 version.
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+```
+
+# Check a single month
+
+Let's load June as an example dataset.
+
+```{r load}
+
+jun_1_orig <- readxl::read_xlsx("../../data/v2/D1/Jun.xlsx", sheet = "Dataset 1")
+jun_2_orig <- readxl::read_xlsx("../../data/v2/D1/Jun.xlsx", sheet = "Dataset 2")
+
+```
+
+Let's do a base reshape (removing Brix, renaming cols and removing full NA's)
+
+```{r base-reshape}
+
+(jun_1_orig <- jun_1_orig %>% 
+  select(c(1,2,3)) %>% 
+  rename(time = 1, temp = 2, state = 3) %>% 
+  filter(!is.na(temp) | !is.na(state)))
+
+(jun_2_orig <- jun_2_orig %>% 
+  rename(time = 1, sp = 2))
+
+
+
+```
+
+Let's look at it
+
+```{r vis-initial, eval=FALSE}
+
+jun_1_orig %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = temp))
+
+```
+
+There's a funny datapoint at the end of each month (NOTE: NOT ANYMORE AS WE'VE UPDATED THE DATA. OLD DATA IN `D1 orig` FOLDER) and dataset (1 and 2) around the date-time `07/02/2022 - 08:15:00` (can be earlier can be later). 
+
+I'll remove it for now.
+
+```{r check, eval=FALSE}
+
+jun_1 <- jun_1_orig %>% 
+  head(., -1)
+
+jun_2 <- jun_2_orig %>% 
+  head(., -1)
+
+```
+
+Looking better:
+
+```{r vis-initial-2, eval=FALSE}
+
+jun_1 %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = temp))
+
+```
+
+This might all make sense now...
+
+```{r vis-plotly, eval=FALSE}
+
+p1 <- ggplot() +
+  geom_line(data = jun_1, aes(x = time, y = temp, colour = "temp")) +
+  geom_step(data = jun_2, aes(x = time, y = sp, colour = "sp"), direction = "hv") + # note the step func changes at the next datapoint!
+  scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint")
+
+
+p2 <- ggplot() +
+  geom_line(data = jun_1, aes(x = time, y = state, colour = "state")) +
+  scale_colour_manual("", breaks = c("state"), values = c("orange"))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+# All files
+
+Manual reshape: I removed the estranged 2022-07-02 entry from all months/datasets.
+
+Now, let's load all files:
+
+```{r laod-all}
+
+# Get file names > remove unwanted files > get file_paths
+files <- list.files(path = '../../data/v2/D1')
+
+files_clean <- tibble(file_name = files) %>% 
+  filter(!str_starts(file_name, '~')) %>% # remove open books
+  pull(file_name)
+
+file_paths <- sapply(files_clean, function(file) { paste0('../../data/v2/D1/', file)  }, USE.NAMES = FALSE)
+
+# Read in all files.
+df_temp_list <- lapply(file_paths, function (x) { readxl::read_xlsx(x, sheet = "Dataset 1") })
+df_sp_list <- lapply(file_paths, function (x) { readxl::read_xlsx(x, sheet = "Dataset 2") })
+
+# Remove list entries with empty tibbles.
+df_sp_list <- purrr::discard(df_sp_list, function(x) nrow(x) == 0)
+
+# Join list items.
+df_temp_orig <- bind_rows(df_temp_list) %>% as_tibble()
+df_sp_orig <- bind_rows(df_sp_list) %>% as_tibble()
+
+names(df_temp_orig)
+names(df_sp_orig)
+
+```
+
+# Reshape and dupes
+
+```{r reshape}
+
+df_temp <- df_temp_orig %>% 
+  select(c(1,2,3)) %>% 
+  rename(time = 1, temp = 2, state = 3) %>% 
+  filter(!is.na(temp) | !is.na(state))
+
+df_sp <- df_sp_orig %>% 
+  rename(time = 1, sp = 2)
+
+names(df_temp)
+names(df_sp)
+
+```
+
+```{r add-date-vars}
+
+(df_temp <- df_temp %>% 
+  mutate(
+    wday = lubridate::wday(time, label = TRUE),
+    day = lubridate::mday(time),
+    month = lubridate::month(time, label = TRUE),
+    year = lubridate::year(time)
+  ))
+
+(df_sp <- df_sp %>% 
+  mutate(
+    wday = lubridate::wday(time, label = TRUE),
+    day = lubridate::mday(time),
+    month = lubridate::month(time, label = TRUE),
+    year = lubridate::year(time)
+  ))
+
+```
+
+
+No time duplicates (which is all that counts):
+
+```{r check_dupes, eval=FALSE}
+
+df_temp %>% 
+  group_by(time) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+df_sp %>% 
+  group_by(time) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+```
+
+# Check visuals
+
+Let's look at all 
+
+```{r vis, eval=FALSE}
+
+p1 <- ggplot() +
+  geom_line(data = df_temp, aes(x = time, y = temp, colour = "temp")) +
+  geom_step(data = df_sp, aes(x = time, y = sp, colour = "sp"), direction = "hv") + # note the step func changes at the next datapoint!
+  scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint")
+
+
+p2 <- ggplot() +
+  geom_line(data = df_temp, aes(x = time, y = state, colour = "state")) +
+  scale_colour_manual("", breaks = c("state"), values = c("orange"))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+
+plotly has issues with the step function
+
+
+```{r vis-2, eval=FALSE}
+
+ggplot() +
+  geom_step(data = df_sp, aes(x = time, y = sp, colour = "sp"), direction = "hv") + # note the step func changes at the next datapoint!
+  scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink"))
+
+
+```
+
+# Merge
+
+Let's merge the data. Maybe start with January
+
+```{r merge-check, eval=FALSE}
+
+df_temp_jan <- df_temp %>% 
+  filter(month == "Jan")
+
+df_sp_jan <- df_sp %>% 
+  filter(month == "Jan")
+
+
+bind_rows(df_temp_jan, df_sp_jan) %>% view()
+
+bind_rows(df_temp_jan, df_sp_jan) %>% 
+  arrange(desc(time)) %>% 
+  view()
+
+bind_rows(df_temp_jan, df_sp_jan) %>% 
+  arrange(desc(time)) %>% 
+  fill(temp) %>% 
+  view()
+
+bind_rows(df_temp_jan, df_sp_jan) %>% 
+  arrange(desc(time)) %>% 
+  fill(temp, state, sp) %>% 
+  view()
+
+```
+
+That all looks good, let's merge them all and fill the variable gaps...
+
+(Note, if the first date value is missing, all other values are missing up to the first variable value)
+
+```{r merge}
+
+(df <- bind_rows(df_temp, df_sp) %>% 
+  select(time, temp, sp, state, everything()) %>% 
+  arrange(time) %>% 
+  fill(temp, state, sp))
+```
+
+# Visualise all data
+
+Let's look at all data:
+
+```{r vis-df}
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  geom_line(aes(y = sp, colour = "sp")) +
+  scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint"))
+
+(p2 <- ggplot(data = df_temp, aes(x = time)) +
+  geom_line(aes(y = state, colour = "state")) +
+  scale_colour_manual("", breaks = c("state"), values = c("orange")))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+Seems to make all sense. A few pulse cooling sessions from October...
+
+What next? Move to the `explore.Rmd` file 
+
+# Write 
+
+Writing file to load it in the Rmd to be sent to Caymus - see [here](https://stackoverflow.com/questions/64089594/my-rmd-file-keeps-getting-error-message-saying-that-you-are-passing-a-function#comment113343838_64089594)
+
+```{r}
+
+write_csv(df, '../../data/v2/output/D1-2021.csv', na = "")
+
+```
+

@@ -1,0 +1,161 @@
+---
+title: "Data v5 analysis - focus"
+output: html_notebook
+---
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+data_path <-  "/data/v5"
+```
+
+
+# Load
+
+Read state as double otherwise it'll be read as logical.
+
+```{r}
+
+(df <- read_csv(paste0(root_path, data_path,  "/df_C1.csv"), col_types = cols(.default = "?")))
+
+```
+
+```{r vis-df}
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp"), values = c("grey")) +
+  labs(y = "temp"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix")) +
+  scale_colour_manual("", breaks = c("brix"), values = c("lightskyblue")))
+
+(p3 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = abv, colour = "abv")) +
+  scale_colour_manual("", breaks = c("abv"), values = c("pink")))
+
+(p4 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = gravity, colour = "gravity")) +
+  scale_colour_manual("", breaks = c("gravity"), values = c("tomato")))
+
+gridExtra::grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+
+# Isolate brix (manual)
+
+4 phases by eye:
+
+2021-09-02 00:00
+2021-09-25 23:59
+
+2021-09-30 00:00
+2021-10-16 23:59
+
+2022-09-12 00:00
+2022-10-26 23:59
+
+2022-09-28 00:00
+2022-10-09 23:59
+
+
+```{r}
+
+# Set rolling window
+window <- 1001
+
+(df_slice <- df %>% 
+  # filter brix manually
+  filter(time > lubridate::ymd("2021-09-01"), time < lubridate::ymd("2021-09-26")) %>% 
+  # smooth
+  mutate(brix_ravg = zoo::rollmedian(brix, k = window, fill = NA, align = "center")) %>% 
+  # re-order
+  select(time, brix, brix_ravg, everything())
+ )
+
+
+# Plot
+(p <- df_slice %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix, colour = "brix")) +
+    geom_line(aes(y = brix_ravg, colour = "brix_ravg")) +
+    scale_colour_manual("", breaks = c("brix", "brix_ravg"), values = c("grey", "tomato")) +
+    ylim(-10, NA))
+
+plotly::ggplotly(p)
+
+```
+
+
+```{r}
+
+(df_slice_knee <- df_slice %>% 
+  filter(time > ymd("2021-09-12"), time < ymd("2021-09-13")))
+
+write_csv(df_slice_knee, paste0(root_path, '/data/v5/df_slice_knee.csv', na = ""))
+
+df_diffed <- df_slice_knee %>% 
+  mutate(diff_brix_avg = c(0, diff(brix_ravg))) %>% 
+  select(time, brix, brix_ravg, diff_brix_avg) %>% 
+  filter(diff_brix_avg != 0)
+
+write_csv(df_diffed, paste0(root_path, '/data/v5/df_diffed.csv', na = ""))
+
+(p <- df_slice_knee %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix, colour = "brix")) +
+    geom_line(aes(y = brix_ravg, colour = "brix_ravg")) +
+    scale_colour_manual("", breaks = c("brix", "brix_ravg"), values = c("grey", "tomato")))
+
+(p <- df_diffed %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix, colour = "brix")) +
+    geom_line(aes(y = brix_ravg, colour = "brix_ravg")) +
+    scale_colour_manual("", breaks = c("brix", "brix_ravg"), values = c("grey", "tomato")))
+
+
+```
+
+
+```{r}
+brix <- df_slice %>% pull(brix)
+
+diff(brix)
+
+(time <- df_slice %>% pull(time))
+
+diff(time)
+
+(d1 <- diff(time) / diff(brix))
+
+```
+
+Trying out some derivatives
+
+```{r}
+
+## Smooth sample function
+(x = seq(0,10,0.1))
+(y = x/2 + sin(x))
+plot(x,y, pch=20)
+
+## Simplest - first difference
+(d1 = diff(y)/diff(x))
+(d1 = c(d1[1],d1))
+
+
+```
+

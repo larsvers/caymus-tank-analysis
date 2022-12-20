@@ -1,0 +1,668 @@
+---
+title: "Data v4 analysis"
+output: html_notebook
+---
+
+This requires the `df-pulse.csv` created at `02 create pulse data.Rmd`.
+
+The transformation builds on the `analysis summary v3.Rmd` file.
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+data_path <- "/data/v4"
+
+```
+
+
+# Functions
+
+```{r}
+
+graph_central_values <- function(df, var, var_name, rounding = 0, y = "Values") {
+  var_enquo = enquo(var)
+  
+  # Get the data range for normalised nudge_* values
+  vector <- df %>% pull(!!var_enquo)
+  dist <- range(vector)[2] - range(vector)[1]
+  nudge <- dist / 25
+  
+  # Get the data
+  data <- df %>% 
+    group_by(ferment_period) %>% 
+    summarise(
+      Average = mean(!!var_enquo),
+      Median = median(!!var_enquo),
+      Min = min(!!var_enquo),
+      Max = max(!!var_enquo),
+    )
+  
+  # Plot
+  p <- ggplot(data) +
+    geom_pointrange(aes(x = ferment_period, y = Median, ymin = Min, ymax = Max, colour = ferment_period), shape = 3) +
+    geom_point(aes(x = ferment_period, y = Average, colour = ferment_period), size = 3) +
+    geom_text(aes(x = ferment_period, y = Median, label = paste("Median: ", round(Median, digits = rounding))),
+              size = 3, hjust = "left", nudge_x = 0.05, colour = "#777777") +
+    geom_text(aes(x = ferment_period, y = Average, label = paste("Avg: ", round(Average, digits = rounding)), colour = ferment_period),
+              size = 3, hjust = "right", nudge_x = -0.05, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Min, label = round(Min, digits = rounding), 
+                  colour = ferment_period), size = 3, vjust = "top", nudge_y = -nudge, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Max, label = round(Max, digits = rounding), 
+                  colour = ferment_period),size = 3, vjust = "bottom", nudge_y = nudge, fontface = "bold") +
+    labs(title = paste0(var_name, ": central values and range"),
+         subtitle = "Fermentation vs non-fermentation",
+         x = "", y = y) +
+    theme(legend.position="none")
+  
+    print(p)
+}
+
+```
+
+```{r}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+graph_series <- function(df, title = "Tank D1 series", plotly = TRUE) {
+
+  chart <- df %>% 
+    ggplot(aes(x = time)) +
+        # Specificaly set `label` to also show the non-scaled status.
+        geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+        geom_line(aes(y = setpoint, colour = "setpoint")) +
+        geom_line(aes(y = temp, colour = "temp")) +
+        scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+        scale_y_continuous(
+          name = "Temperatures",
+          sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status"),
+          limits = c(0, 150)
+        ) +
+        scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month") +
+        labs(title = title, x = "Time")
+    
+  # Show chart
+  if (plotly) {
+    plotly_chart <- ggplotly(chart) %>% 
+      layout(title = title)
+    
+    print(plotly_chart)
+  } else {
+    print(chart)
+  }
+    
+}
+
+```
+
+```{r}
+
+graph_scatter <- function(df, x, y, title = "title", x_lab = "x", y_lab = "y") {
+
+  x_enquo <- enquo(x)
+  y_enquo <- enquo(y)
+
+  p <- ggplot(data = df, aes(x = !!x_enquo, y = !!y_enquo, label = pulse_group)) +
+    geom_point(aes(colour = ferment_period)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment_period, scales = "free_x") +
+    labs(title = title, x = x_lab, y = y_lab) +
+    theme(legend.position = "none")
+
+  ggplotly(p, width = 800)  
+}
+
+```
+
+```{r}
+
+graph_density <- function(df, x_var, fill_var, title = "Density", x = "x", y = "y", fill_values = FALSE, colour_values = FALSE) {
+  x_var_enquo = enquo(x_var)
+  fill_var_enquo = enquo(fill_var)
+
+  p <- ggplot(df) +
+    geom_density(aes(x = !!x_var_enquo, fill = !!fill_var_enquo, ..count..), alpha = 0.5, colour = "#555555") +
+    theme(legend.title = element_blank()) +
+    labs(title = title,x = x, y = y)
+  
+  if (fill_values != FALSE && colour_values != FALSE) {
+    p <- p + scale_fill_manual(breaks = fill_values, values = colour_values)
+  }
+  
+  print(p)
+}
+
+```
+
+```{r}
+
+# Read main data
+df <- read_csv(paste0(root_path, data_path,  "/pulse/df-pulse.csv"), col_types = cols(pulse = "c", pulse_group = "c"))
+
+# Set status labels
+df <- df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "0 - error",
+    status == 1 ~ "1 - off",
+    status == 2 ~ "2 - on (not cooling)",
+    status == 3 ~ "3 - on (cooling)",
+    status == 10 ~ "10 - low temp alarm (not cooling)",
+    status == 11 ~ "11 - low low temp alarm (not cooling)",
+    status == 12 ~ "12 - high temp alarm (cooling)",
+    status == 13 ~ "13 - high high temp alarm (cooling)",
+    status == 14 ~ "14 - low temp alarm (not cooling)",
+    status == 15 ~ "15 - low low temp alarm (not cooling)",
+    status == 16 ~ "16 - high temp alarm (cooling)",
+    status == 17 ~ "17 - high high temp alarm (cooling)",
+  ))
+
+```
+
+# The event data
+
+Here's the full dataset as a time-series showing <span style="color:darkorange">temperature</span>, <span style="color:steelblue">setpoint</span> and  <span style="color:#777">status</span>. 
+
+```{r}
+graph_series(df, plotly = FALSE, title = "March to June 2022")
+```
+
+
+```{r}
+graph_series(df_21 %>% filter(time >= ymd_hms("2021-03-03 20:23:08"), time <= ymd_hms("2021-06-02 16:28:55")), plotly = FALSE, title = "March - June 2021")
+```
+
+We'll focus on non-fermntation and non-empty tank data starting from 2022-04-17 to 2022-05-13 (including).
+
+Let's label this data:
+
+```{r}
+
+df <- df %>% 
+  mutate(empty = ifelse(time >= ymd("2022-04-17") & time <= ymd("2022-05-13"), TRUE, FALSE)) %>% 
+  mutate(
+    ## In this data all events are non-fermentation...
+    # ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE),
+    # ferment_period = ifelse(ferment == "no-ferment", "No Fermentation", "Fermentation"),
+    ferment = "no-ferment",
+    ferment_bool = FALSE,
+    ferment_period = "No Fermentation"
+  )
+
+
+
+```
+
+
+# Get the pulse summary data
+
+In a next step we produce a dataset that just focusses on the pulse cooling periods. Each row in this dataset is a pulse cooling period and each variable summarises a specific pulse period characteristic:
+
+```{r}
+
+# Number of modulations.
+pulse_num <- df %>% 
+  group_by(pulse_group) %>% 
+  count() %>% 
+  mutate(pulse_group_start = parse_date_time(pulse_group, orders = "d/m/Y H:M")) %>% 
+  arrange(pulse_group_start) %>% 
+  ungroup()
+
+# Main pulse period data.
+df_pulse <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment_bool, ferment, pulse, pulse_group, temp) %>% 
+  mutate(ferment_period = ifelse(ferment_bool, "Fermentation", "No Fermentation")) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA)) %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(pulse == "start") %>% 
+  select(-pulse) %>%
+  left_join(pulse_num %>% select(pulse_group, pulse_number = n), by = "pulse_group") %>% 
+  mutate(pulse_frequency = pulse_number / pulse_duration) %>% 
+  mutate(roc = temp_diff / (pulse_duration/60))  # temperature change per hour (pulse_duration is in minutes, hence /60 is in hours)
+
+# # Remove pulse groups with low single modulation
+# df_pulse <- df_pulse %>% 
+#   filter(pulse_group != "19/09/2021 12:16" & pulse_group != "23/09/2021 10:37")
+
+# Modulation summary variables.
+df_modulation <- df %>% 
+  # filter(!is.na(pulse), ferment_bool) %>% 
+  filter(!is.na(pulse)) %>%
+  mutate(
+    status_diff_2 = ifelse(status == 2, diff, NA_real_),
+    status_diff_3 = ifelse(status == 3, diff, NA_real_)
+  ) %>% 
+  group_by(pulse_group) %>% 
+  summarise(
+    pulse_dur_2_mean_sec = mean(status_diff_2, na.rm = TRUE),
+    pulse_dur_3_mean_sec = mean(status_diff_3, na.rm = TRUE),
+    pulse_duration_2 = sum(status_diff_2, na.rm = TRUE) / 60,
+    pulse_duration_3 = sum(status_diff_3, na.rm = TRUE) / 60,
+  ) %>% 
+  mutate(
+    cooling_percent_mean = pulse_dur_3_mean_sec / (pulse_dur_2_mean_sec + pulse_dur_3_mean_sec),
+    cooling_percent = pulse_duration_3 / (pulse_duration_2 + pulse_duration_3),
+  ) %>% 
+  ungroup()
+
+# Add modulation variables to main data. 
+(df_pulse <- df_pulse %>%
+  left_join(df_modulation, by = "pulse_group") %>% 
+  select(
+    time,
+    ferment_bool,
+    ferment_period,
+    ferment,
+    pulse_group,
+    temp,
+    temp_diff,
+    pulse_duration,
+    roc,
+    pulse_dur_2_mean_sec,
+    pulse_dur_3_mean_sec,
+    cooling_percent,
+    pulse_duration_2,
+    pulse_duration_3,
+    pulse_number,
+    pulse_frequency,
+  ))
+
+```
+
+
+# Get the 2021 data
+
+Get the 2021 event data in and produce the pulse data:
+
+```{r}
+
+# Event data
+# ----------
+
+df_21 <- read_csv(paste0(root_path, "/data/v3/pulse/df-pulse.csv"), col_types = cols(pulse = "c", pulse_group = "c"))
+
+# Set status labels
+df_21 <- df_21 %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "0 - error",
+    status == 1 ~ "1 - off",
+    status == 2 ~ "2 - on (not cooling)",
+    status == 3 ~ "3 - on (cooling)",
+    status == 10 ~ "10 - low temp alarm (not cooling)",
+    status == 11 ~ "11 - low low temp alarm (not cooling)",
+    status == 12 ~ "12 - high temp alarm (cooling)",
+    status == 13 ~ "13 - high high temp alarm (cooling)",
+    status == 14 ~ "14 - low temp alarm (not cooling)",
+    status == 15 ~ "15 - low low temp alarm (not cooling)",
+    status == 16 ~ "16 - high temp alarm (cooling)",
+    status == 17 ~ "17 - high high temp alarm (cooling)",
+  ))
+
+# Set fermentation periods
+df_21 <- df_21 %>% 
+  mutate(ferment = case_when(
+    time >= ymd_hms("2021-09-16 19:44:16") & time <= ymd_hms("2021-09-23 12:10:51") ~ "Sep-09",
+    time >= ymd_hms("2021-10-04 18:22:17") & time <= ymd_hms("2021-10-10 00:55:03") ~ "Oct-04",
+    time >= ymd_hms("2021-10-19 08:07:31") & time <= ymd_hms("2021-10-26 18:36:02") ~ "Oct-19",
+    TRUE ~ "no-ferment"
+  )) %>% 
+  mutate(
+    ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE),
+    ferment_period = ifelse(ferment == "no-ferment", "No Fermentation", "Fermentation"),
+  )
+
+# Pulse data
+# ----------
+
+# Number of modulations.
+pulse_num <- df_21 %>% 
+  group_by(pulse_group) %>% 
+  count() %>% 
+  mutate(pulse_group_start = parse_date_time(pulse_group, orders = "d/m/Y H:M")) %>% 
+  arrange(pulse_group_start) %>% 
+  ungroup()
+
+# Main pulse period data.
+df_pulse_21 <- df_21 %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment_bool, ferment, pulse, pulse_group, temp) %>% 
+  mutate(ferment_period = ifelse(ferment_bool, "Fermentation", "No Fermentation")) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA)) %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(pulse == "start") %>% 
+  select(-pulse) %>%
+  left_join(pulse_num %>% select(pulse_group, pulse_number = n), by = "pulse_group") %>% 
+  mutate(pulse_frequency = pulse_number / pulse_duration) %>% 
+  mutate(roc = temp_diff / (pulse_duration/60))  # temperature change per hour (pulse_duration is in minutes, hence /60 is in hours)
+
+# Remove pulse groups with low single modulation
+df_pulse_21 <- df_pulse_21 %>% 
+  filter(pulse_group != "19/09/2021 12:16" & pulse_group != "23/09/2021 10:37")
+
+# Modulation summary variables.
+df_modulation <- df_21 %>% 
+  # filter(!is.na(pulse), ferment_bool) %>% 
+  filter(!is.na(pulse)) %>%
+  mutate(
+    status_diff_2 = ifelse(status == 2, diff, NA_real_),
+    status_diff_3 = ifelse(status == 3, diff, NA_real_)
+  ) %>% 
+  group_by(pulse_group) %>% 
+  summarise(
+    pulse_dur_2_mean_sec = mean(status_diff_2, na.rm = TRUE),
+    pulse_dur_3_mean_sec = mean(status_diff_3, na.rm = TRUE),
+    pulse_duration_2 = sum(status_diff_2, na.rm = TRUE) / 60,
+    pulse_duration_3 = sum(status_diff_3, na.rm = TRUE) / 60,
+  ) %>% 
+  mutate(
+    cooling_percent_mean = pulse_dur_3_mean_sec / (pulse_dur_2_mean_sec + pulse_dur_3_mean_sec),
+    cooling_percent = pulse_duration_3 / (pulse_duration_2 + pulse_duration_3),
+  ) %>% 
+  ungroup()
+
+# Add modulation variables to main data. 
+(df_pulse_21 <- df_pulse_21 %>%
+  left_join(df_modulation, by = "pulse_group") %>% 
+  select(
+    time,
+    ferment_bool,
+    ferment_period,
+    ferment,
+    pulse_group,
+    temp,
+    temp_diff,
+    pulse_duration,
+    roc,
+    pulse_dur_2_mean_sec,
+    pulse_dur_3_mean_sec,
+    cooling_percent,
+    pulse_duration_2,
+    pulse_duration_3,
+    pulse_number,
+    pulse_frequency,
+  ))
+
+```
+
+# Analysis
+
+We'll just be looking at pulses with the 22 period we have available and compare them to pulses of the same time frame of the 21 dataset
+
+```{r}
+df_pulse %>% summary()
+```
+
+
+- Period start: 2021-03-03 20:23:08
+- Period end: 2021-06-02 16:28:55
+
+## Create comparable datasets
+
+Let's find a 21 and a 22 dataset that have a non-empty, non-fermenting tank.
+
+Let's check both time-series first, to then note down the respective periods:
+
+```{r}
+graph_series(df_21 %>% filter(time >= ymd_hms("2021-03-03 20:23:08"), time <= ymd_hms("2021-06-02 16:28:55"), !ferment_bool), plotly = FALSE)
+```
+
+
+```{r}
+graph_series(df, plotly = FALSE)
+```
+
+
+21 flat, non-empty non-fermentation data:
+
+- 2021-03-06 10:45:08 - 2021-03-19 16:19:27
+- 2021-03-25 21:36:03 - end (2021-06-02 16:28:55)
+
+22 flat, non-empty non-fermantation data:
+
+- start (2022-03-03 20:23:08) - 2022-04-16 (incl.)
+- 2022-05-13 (incl.) - end (2022-06-02 16:28:55)
+
+Filter and check event data:
+
+```{r}
+df_21 %>% 
+  filter(
+    !ferment_bool,
+    (time >= ymd_hms("2021-03-06 10:45:08") & time <= ymd_hms("2021-03-19 16:19:27") | time >= ymd_hms("2021-03-25 21:36:03") & time <= ymd_hms("2021-06-02 16:28:55"))
+  ) %>% 
+  graph_series(plotly = FALSE, title = "March to June 21 | no temperature events")
+
+df %>% 
+  filter(
+    !ferment_bool,
+    (time >= ymd_hms("2022-03-03 20:23:08") & time <= ymd("2022-04-16") | time >= ymd("2022-05-13") & time <= ymd_hms("2022-06-02 16:28:55"))
+  ) %>% 
+  graph_series(plotly = FALSE, title = "March to June 22 | no temperature events")
+
+```
+
+Filter pulse data:
+
+```{r}
+
+df_focus_21 <- df_pulse_21 %>% 
+  filter(
+    !ferment_bool,
+    (time >= ymd_hms("2021-03-06 10:45:08") & time <= ymd_hms("2021-03-19 16:19:27") | time >= ymd_hms("2021-03-25 21:36:03") & time <= ymd_hms("2021-06-02 16:28:55"))
+  )
+
+df_focus_22 <- df_pulse %>% 
+  filter(
+    !ferment_bool,
+    (time >= ymd_hms("2022-03-03 20:23:08") & time <= ymd("2022-04-16") | time >= ymd("2022-05-13") & time <= ymd_hms("2022-06-02 16:28:55"))
+  )
+
+```
+
+
+
+## Compare pulses per day 21 v 22
+
+```{r}
+
+# Number of non-empty, non-fermentation days in 21
+int_21_1 <- interval(ymd_hms("2021-03-06 10:45:08"), ymd_hms("2021-03-19 16:19:27"))
+int_21_2 <- interval(ymd_hms("2021-03-25 21:36:03"), ymd_hms("2021-06-02 16:28:55"))
+days_21 <- time_length(int_21_1, "days") + time_length(int_21_2, "days")
+
+# Pulses per day 21
+ratio_21 <- nrow(df_focus_21) / days_21
+
+# Number of non-empty, non-fermentation days in 22
+int_22_1 <- interval(ymd_hms("2022-03-03 20:23:08"), ymd_hms("2022-04-16 23:59:59"))
+int_22_2 <- interval(ymd_hms("2022-05-13 00:00:01"), ymd_hms("2022-06-02 16:28:55"))
+days_22 <- time_length(int_22_1, "days") + time_length(int_22_2, "days")
+
+# Pulses per day 21
+ratio_22 <- nrow(df_focus_22) / days_22
+
+ tibble(label = c("21", "22"), `pulses per day` = c(ratio_21, ratio_22)) %>% 
+   ggplot() +
+    geom_bar(aes(x = `pulses per day`, y = label, fill = label), stat = "identity", alpha = 0.7) +
+    geom_text(aes(x = `pulses per day`, y = label, label = round(`pulses per day`, 2)), nudge_x = -0.04) +
+    coord_flip() +
+    labs(
+      title = "Pulses per day ratio",
+      subtitle = "Comparable period Mar to Jun 21 v 22",
+      x = "Pulses per day"
+    )
+
+```
+
+- Compare all variables:
+
+```{r}
+
+skimr::skim(df_focus_21)
+skimr::skim(df_focus_22)
+
+```
+
+## Merge data
+
+Let's get the two datasets into one set to compare their distributions
+
+```{r}
+
+df_focus <- bind_rows(df_focus_21 %>% mutate(dataset = "21"), df_focus_22 %>% mutate(dataset = "22"))
+
+```
+
+## Compare key values
+
+```{r}
+skimr::skim(df_focus)
+```
+
+### Density comparison
+
+```{r}
+
+graph_density(df_focus, temp, dataset, "Density of Temperature", "Temperature", "Count")
+graph_density(df_focus, temp_diff, dataset, "Density of Temperature difference", "Temperature difference", "Count")
+graph_density(df_focus, pulse_duration, dataset, "Density of Pulse Duration", "Pulse Duration", "Count")
+graph_density(df_focus, roc, dataset, "Density of Rate of Change", "Rate of Change", "Count")
+graph_density(df_focus, cooling_percent, dataset, "Density of Cooling Percent", "Cooling Percent", "Count")
+graph_density(df_focus, pulse_number, dataset, "Density of Pulse Number", "Pulse Number", "Count")
+graph_density(df_focus, pulse_frequency, dataset, "Density of Pulse Frequency", "Pulse Frequency", "Count")
+
+```
+
+
+### Avg and median
+
+```{r}
+graph_focus_bar <- function(data, x, title = "Yay", x_label = "x", y_label = "") {
+  x_enquo <- enquo(x)
+
+  # nudge same distance across charts with different values.
+  vector <- data %>% pull(!!x_enquo)
+  nudge <- max(vector) / 20
+
+  # make bars
+  p <- data %>%
+    mutate(nudgy = !!x_enquo / 2) %>%
+    ggplot() +
+      geom_bar(aes(x = !!x_enquo, y = dataset, fill = dataset), stat = "identity", alpha = 0.7) +
+      geom_text(aes(x = !!x_enquo, y = dataset, label = round(!!x_enquo, 2)), nudge_x = -nudge) +
+      coord_flip() +
+      labs(
+        title = title,
+        x = x_label,
+        y = y_label
+      ) +
+      theme(legend.position = "none")
+
+  print(p)
+}
+```
+
+
+```{r}
+
+dt_avg <- df_focus %>% 
+  group_by(dataset) %>% 
+  summarise(
+    temp = mean(temp),
+    temp_diff = mean(temp_diff),
+    pulse_duration = mean(pulse_duration),
+    roc = mean(roc),
+    cooling_percent = mean(cooling_percent),
+    pulse_number = mean(pulse_number),
+    pulse_frequency = mean(pulse_frequency),
+  )
+
+dt_median <- df_focus %>% 
+  group_by(dataset) %>% 
+  summarise(
+    temp = median(temp),
+    temp_diff = median(temp_diff),
+    pulse_duration = median(pulse_duration),
+    roc = median(roc),
+    cooling_percent = median(cooling_percent),
+    pulse_number = median(pulse_number),
+    pulse_frequency = median(pulse_frequency),
+  )
+
+graph_focus_bar(dt_avg, temp, "Avg. Temperature 21 v 22", "Temperature")
+graph_focus_bar(dt_median, temp, "Median Temperature 21 v 22", "Temperature")
+
+graph_focus_bar(dt_avg, temp_diff, "Avg. Temperature difference 21 v 22", "Temperature difference")
+graph_focus_bar(dt_median, temp_diff, "Median Temperature difference 21 v 22", "Temperature difference")
+
+graph_focus_bar(dt_avg, pulse_duration, "Avg. Pulse Duration 21 v 22", "Pulse Duration")
+graph_focus_bar(dt_median, pulse_duration, "Median Pulse Duration 21 v 22", "Pulse Duration")
+
+graph_focus_bar(dt_avg, roc, "Avg. Rate of Change 21 v 22", "Rate of Change")
+graph_focus_bar(dt_median, roc, "Median Rate of Change 21 v 22", "Rate of Change")
+
+graph_focus_bar(dt_avg, cooling_percent, "Avg. Cooling Percent 21 v 22", "Cooling Percent")
+graph_focus_bar(dt_median, cooling_percent, "Median Cooling Percent 21 v 22", "Cooling Percent")
+
+graph_focus_bar(dt_avg, pulse_number, "Avg. Pulse Number 21 v 22", "Pulse Number")
+graph_focus_bar(dt_median, pulse_number, "Median Pulse Number 21 v 22", "Pulse Number")
+
+graph_focus_bar(dt_avg, pulse_frequency, "Avg. Pulse Frequency 21 v 22", "Pulse Frequency")
+graph_focus_bar(dt_median, pulse_frequency, "Median Pulse Frequency 21 v 22", "Pulse Frequency")
+
+
+
+```
+
+
+## Pulse duration v temp difference with previous year
+
+```{r}
+p <- df_focus %>% 
+  ggplot(aes(label = dataset)) +
+    geom_point(aes(x = pulse_duration, y = temp_diff)) +
+    scale_y_continuous(limits = c(-1.5, 1.5)) +
+    annotate("rect", ymin = 0.5, ymax = Inf, xmin = -Inf, xmax = 130, fill= "tomato", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = -0.75, xmin = -Inf, xmax = 130, fill= "lightskyblue", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = +Inf, xmin = 130, xmax = +Inf, fill= "aquamarine", alpha = 0.2) +
+    annotate("rect", ymin = -0.74, ymax = 0.49, xmin = -Inf, xmax = 128, fill= "#eeeeee", alpha = 0.8) +
+    geom_vline(xintercept = 130, alpha = 0.5) +
+    geom_segment(aes(x = -Inf, xend = 130, y = 0.5, yend = 0.5), alpha = 0.5, size = 0.2) +
+    geom_segment(aes(x = -Inf, xend = 130, y = -0.75, yend = -0.75), alpha = 0.5, size = 0.2) +
+    labs(
+      title = "Pulse duration v Temperature change",
+      subtitle = "Segmentation",
+      x = "Pulse duration",
+      y = "Temperature change in °F"
+    ) +
+  facet_wrap(~ dataset)
+
+print(p)
+
+```
+
+# Conclusion
+
+Changes to the pulse cooling system have moved the data in the right direction. Although a direct comparison between the 21 and the 22 dataset can't be generalised as underlying factors not considered in this analysis play a role, a few parameters have clearly gone the right direction and - assuming all else stable - underline the success of the changed  measures. In summary:
+
+- There are fewer pulses per day comparing pre- and post-change
+- The effects of the pre- and post-change pulsing is the same (an average/median temperature at setpoint)
+- The average pulse duration significantly decreased from just under 80 minutes to under 45 minutes
+- The pulses seem to be more focussed in that the cooling percent more than doubled from 8 to 17% (more focussed cooling, yet this will also mean more resources spent - however, one would argue: more precise)
+- The changes clearly cut off the "long tail" (see the scatter) of pulses over 2 hours and achieved a more concise and normal cluster with a focal point below 0 °F temperature change
+
+

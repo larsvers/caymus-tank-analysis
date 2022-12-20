@@ -1,0 +1,989 @@
+---
+title: "Analysis v3"
+output: html_notebook
+---
+
+
+
+```{r libs, echo=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+```
+
+This notebook analyses the data loaded, recoded and explored in (1) `load.Rmd` and (2) `explore.Rmd`.
+
+```{r}
+df <- read_csv(paste0(root_path, "/data/v3/pulse/df-pulse.csv"), col_types = cols(pulse = "c", pulse_group = "c"))
+```
+
+Base profile
+
+```{r eval=FALSE}
+
+df %>% view("df")
+df %>% skimr::skim()
+
+```
+
+So, 69% of all rows are pulsing - but that doesn't mean that 69% of 2021 pulsing happened, rather that 69% of all events in 21 were pulsing events.
+
+# Objectives and questions
+
+Key objective is to learn about pulse cooling and how it effects temperature. Some questions of interests:
+
+## Length
+
+- How long are pulse cooling periods?
+
+## Rate of change
+
+- What is the rate of temperature change during pulse cooling? 
+- Does it change during the pulse cooling phase?
+
+## Frequencies
+
+- What is the modulation frequency during pulse cooling? 
+- Does it change and if so how?
+- Do different frequencies impact temperature differently?
+
+## Split 
+
+- Fermentation vs no fermentation
+
+# Recode 
+
+## Status label
+
+`status` categories are:
+
+- 0   	Loss of data or error
+- 1	    Tank is off
+- 2	    Tank is on but not cooling
+- 3	    Tank is on and cooling
+- 10    No ROC alarm low temperature alarm (valve closed - not cooling)
+- 11    No ROC alarm low low temperature alarm (valve closed - not cooling)
+- 12    No ROC alarm high temperature alarm ~2 (valve open - cooling)
+- 13    No ROC alarm high high temperature alarm ~10 (valve open - cooling)
+- 14    In ROC alarm low temperature alarm (valve closed - not cooling)
+- 15    In ROC alarm low low temperature alarm (valve closed - not cooling)
+- 16    In ROC alarm high temperature alarm (valve open - cooling)
+- 17    In ROC alarm high high temperature alarm (valve open - cooling)
+
+Let's create a label column for `status`:
+
+```{r}
+
+# Check
+df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "error",
+    status == 1 ~ "off",
+    status == 2 ~ "on - not cooling",
+    status == 3 ~ "on - cooling",
+    status == 10 ~ "low temp alarm - not cooling",
+    status == 11 ~ "low low temp alarm - not cooling",
+    status == 12 ~ "high temp alarm - cooling",
+    status == 13 ~ "high high temp alarm - cooling",
+    status == 14 ~ "low temp alarm - not cooling",
+    status == 15 ~ "low low temp alarm - not cooling",
+    status == 16 ~ "high temp alarm - cooling",
+    status == 17 ~ "high high temp alarm - cooling",
+  )) %>% 
+  group_by(status, status_label) %>% 
+  count()
+
+# Do
+df <- df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "error",
+    status == 1 ~ "off",
+    status == 2 ~ "on - not cooling",
+    status == 3 ~ "on - cooling",
+    status == 10 ~ "low temp alarm - not cooling",
+    status == 11 ~ "low low temp alarm - not cooling",
+    status == 12 ~ "high temp alarm - cooling",
+    status == 13 ~ "high high temp alarm - cooling",
+    status == 14 ~ "low temp alarm - not cooling",
+    status == 15 ~ "low low temp alarm - not cooling",
+    status == 16 ~ "high temp alarm - cooling",
+    status == 17 ~ "high high temp alarm - cooling",
+  ))
+
+```
+
+## Fermentation
+
+Identify each fermentation step in the data. 
+
+Do so by identifying each start and end visually before setting the variable accordingly.
+
+```{r}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+chart_full_year <- ggplot(df, aes(x = time)) +
+  # Specificaly set `label` to also show the non-scaled status.
+  geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status")
+  ) +
+   scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month")
+
+```
+
+```{r eval=FALSE}
+
+ggplotly(chart_full_year)
+
+```
+
+The following periods very much look like fermentations... (KEY)
+
+Fermentation 1:
+- start: 2021-09-16 19:44:16
+- end: 2021-09-23 12:10:51
+
+Fermentation 2:
+- start: 2021-10-04 18:22:17
+- end: 2021-10-10 00:55:03
+
+Fermentation 3:
+- start: 2021-10-19 08:07:31
+- end: 2021-10-26 18:36:02
+- Note: setpoint not set correctly. Says 55 - probably is 75
+
+Now lets set these:
+
+```{r}
+
+# Check
+df %>% 
+  mutate(ferment = case_when(
+    time >= ymd_hms("2021-09-16 19:44:16") & time <= ymd_hms("2021-09-23 12:10:51") ~ "Sep-09",
+    time >= ymd_hms("2021-10-04 18:22:17") & time <= ymd_hms("2021-10-10 00:55:03") ~ "Oct-04",
+    time >= ymd_hms("2021-10-19 08:07:31") & time <= ymd_hms("2021-10-26 18:36:02") ~ "Oct-19",
+    TRUE ~ "no-ferment"
+  )) %>%
+  mutate(ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE)) %>% 
+  group_by(ferment, ferment_bool) %>% 
+  count()
+
+# Do
+(df <- df %>% 
+  mutate(ferment = case_when(
+    time >= ymd_hms("2021-09-16 19:44:16") & time <= ymd_hms("2021-09-23 12:10:51") ~ "Sep-09",
+    time >= ymd_hms("2021-10-04 18:22:17") & time <= ymd_hms("2021-10-10 00:55:03") ~ "Oct-04",
+    time >= ymd_hms("2021-10-19 08:07:31") & time <= ymd_hms("2021-10-26 18:36:02") ~ "Oct-19",
+    TRUE ~ "no-ferment"
+  )) %>% 
+  mutate(ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE)))
+
+
+```
+
+# Analysis
+
+## Number of pulses
+
+How many pulse cooling sections are there across 2021?
+
+```{r}
+
+# Data
+(pulse_num <- df %>% 
+  group_by(pulse_group) %>% 
+  count() %>% 
+  mutate(pulse_group_start = parse_date_time(pulse_group, orders = "d/m/Y H:M")) %>% 
+  arrange(pulse_group_start) %>% 
+  ungroup())
+
+# Base profile
+pulse_num %>% summary()
+pulse_num %>% skimr::skim()
+
+# Data magnitude
+pulse_num %>% 
+  filter(!is.na(pulse_group)) %>% 
+  arrange(desc(n))
+
+# Visual time.
+pulse_num %>% 
+  filter(!is.na(pulse_group)) %>% 
+  ggplot() +
+    geom_bar(aes(x = pulse_group_start, y = n), stat = "identity")
+
+# Visual magnitude
+pulse_num %>% 
+  filter(!is.na(pulse_group)) %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -n), y = n), stat = "identity")
+
+```
+
+Check the numbers split by ferment
+
+```{r eval=FALSE}
+
+# Data
+(pulse_num_split <- df %>% 
+  group_by(ferment, ferment_bool, pulse_group) %>% 
+  count() %>% 
+  ungroup() %>% 
+  filter(!is.na(pulse_group)))
+
+# Number of pulse periods ferment v non-ferment
+pulse_num_split %>% 
+  group_by(ferment_bool) %>% 
+  count()
+
+# Number of pulse periods per ferment group
+pulse_num_split %>% 
+  group_by(ferment) %>% 
+  count()
+
+# Average number of oscilations
+pulse_num_split %>% 
+  group_by(ferment) %>% 
+  summarise(mean(n))
+
+```
+
+There were 205 pulse periods outside and 67 during fermentation. (KEY)
+
+For each fermentation there are between 16 and 27 pulse periods. (KEY)
+
+
+## Duration
+
+How long are pulse cooling periods?
+
+```{r eval=FALSE}
+
+# Data
+(pulse_dur <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, pulse, pulse_group) %>% 
+  mutate(duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(!is.na(duration)))
+
+# Sorted
+pulse_dur %>% 
+  select(duration) %>% 
+  summary()
+
+# Normal values
+pulse_dur %>% 
+  arrange(desc(duration))
+
+# Visual time
+p <- pulse_dur %>% 
+  ggplot() +
+    geom_bar(aes(x = time, y = duration), stat = "identity")
+
+ggplotly(p)
+
+# Visual magnitude
+pulse_dur %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -duration), y = duration), stat = "identity")
+
+```
+
+About an hour in average, right skewed (outliers in the max direction) (KEY)
+
+Note the outliers in December.
+
+Let's check the numbers split by ferment
+
+```{r eval=FALSE}
+
+# Data
+(pulse_dur_split <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(ferment_bool, ferment, time, pulse, pulse_group) %>% 
+  mutate(duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(!is.na(duration)) %>% 
+  select(ferment_bool, ferment, time, pulse_group, duration))
+
+# Average duration ferment vs non-ferment
+pulse_dur_split %>% 
+  group_by(ferment_bool) %>% 
+  summarise(duration_average= mean(duration))
+
+# Average per fermentation state
+pulse_dur_split %>% 
+  group_by(ferment) %>% 
+  summarise(duration_average= mean(duration))
+
+```
+
+Fermentation pulses are roughly double as long as non-fermentation pulses. (KEY)
+
+The September fermentation pulses are the shortest, the late October pulses the longest. 
+
+This seems counterintuitive as the September fermentation was the most active 
+
+Let's check the oscillations:
+
+```{r eval=FALSE}
+
+# Data
+(pulse_dur_split <- df %>% 
+  group_by(ferment, pulse_group) %>% 
+  count() %>% 
+  ungroup() %>% 
+  filter(!is.na(pulse_group)))
+
+# Number of pulse periods
+pulse_num_split %>% 
+  group_by(ferment) %>% 
+  count()
+
+# Average number of oscilations
+pulse_num_split %>% 
+  group_by(ferment) %>% 
+  summarise(mean(n))
+
+```
+
+The oscillations seem to follow the time. (more below)
+
+## Rate of change
+
+What is the rate of temperature change during pulse cooling? 
+
+First, we want to get a good data-frame that has deltas for all interesting measures (time, temp, pulse numbers, pulse duration) as well as the rate of change per hour.
+
+```{r}
+
+# Data
+(df_pulse <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment_bool, ferment, pulse, pulse_group, temp) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA)) %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)) %>% 
+  filter(pulse == "start") %>% 
+  select(-pulse) %>%
+  left_join(pulse_num %>% select(pulse_group, pulse_number = n), by = "pulse_group") %>% 
+  mutate(roc = temp_diff / (pulse_duration/60))) # temperature change per hour (pulse_duration is in minutes, hence /60 is in hours)
+
+```
+
+```{r}
+
+(t <- df %>% 
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment_bool, ferment, pulse, pulse_group, temp) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA)) %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA)))
+
+```
+
+```{r}
+
+as.numeric(ymd_hms("2021-02-25 21:07:38") - ymd_hms("2021-02-25 19:53:32"))
+as.numeric(t[2,1] %>% pull() - t[1,1] %>% pull()) * 60
+
+```
+
+EDIT: we'll remove two pulse_groups below when checking the pulse modulations (see headline _Modulations_)
+
+### Frequencies
+
+Now let's look at frequencies and distributions
+
+```{r}
+
+# function.
+show_frequencies <- function(var) {
+  var_enquo <- enquo(var)
+  
+  p1 <- ggplot(df_pulse) +
+    geom_bar(aes(x = pulse_group, y = !!var_enquo), stat = "identity") +
+    facet_wrap(~ferment_bool)
+  
+  p2 <- ggplot(df_pulse) +
+    geom_density(aes(x = !!var_enquo)) +
+    # geom_histogram(aes(x = temp)) +
+    facet_wrap(~ferment_bool)
+  
+  print(p1)
+  print(p2)
+}
+
+```
+
+```{r eval=FALSE}
+
+# Skims
+print("non-ferment")
+df_pulse %>% 
+  filter(!ferment_bool) %>% 
+  skimr::skim()
+
+print("ferment")
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  skimr::skim()
+
+# Frequencies
+show_frequencies(temp)
+show_frequencies(temp_diff)
+
+show_frequencies(pulse_duration)
+show_frequencies(pulse_number)
+
+show_frequencies(roc)
+
+```
+
+There's some hefty positive ROC's. Let's see where they are:
+
+```{r eval=FALSE}
+
+p <- ggplot(df_pulse) +
+  geom_bar(aes(x = pulse_group, y = roc), stat = "identity") +
+  facet_wrap(~ferment_bool)
+
+ggplotly(p)
+
+```
+
+```{r eval=FALSE}
+
+ggplotly(chart_full_year)
+
+```
+
+The top positive ROC during non-fermentation is a very short pulse (possibly during an empty tank).
+
+In general, all larger positive ROC's happened during pulses shorter than 10 minutes: (KEY)
+
+```{r eval=FALSE}
+
+# Show data
+(roc_pos <- df_pulse %>% 
+  filter(roc > 0) %>% 
+  select(-time, -ferment_bool) %>% 
+  arrange(desc(roc)))
+
+# Show scatter
+p <- ggplot(roc_pos, aes(x = pulse_duration, y = roc)) + 
+  geom_point(aes(colour = roc))
+
+ggplotly(p)
+
+
+```
+
+
+## Associations
+
+First, let's check all correlations - noting that `pulse_duration` v `temp_diff` will be the most interesting and telling.
+
+```{r eval=FALSE}
+
+# Data
+non_ferments <- df_pulse %>% filter(!ferment_bool)
+ferments <- df_pulse %>% filter(ferment_bool)
+
+# Correlation
+cor(non_ferments %>% select(temp, temp_diff, pulse_duration, pulse_number, roc))
+cor(ferments %>% select(temp, temp_diff, pulse_duration, pulse_number, roc))
+
+# Plot
+(t <- ferments %>% select(temp, temp_diff, pulse_duration, pulse_number, roc))
+(p <- GGally::ggpairs(t))
+ggplotly(p)
+
+```
+
+Correlation notes for fermentation:
+
+- The higher the temp the higher the temp change (very weak)
+- The higher the temp the shorter the pulse periods (medium)
+- The higher the temp the fewer oscillations (medium)
+- the higher the temp change the shorter the pulses (weak - medium)
+- the higher the temp change the fewer the pulses (weak - medium)
+- the longer the pulses the more oscillations (strong)
+
+- the longer the pulse periods the smaller the ROC (weak)
+
+In short: 
+
+- Higher temperatures seem to be best addressed by shorter pulses periods
+- However, the more oscillations and the longer the pulses, the more negative the temperature change (which means the more efficient the pulsing). (REALLY?)
+
+
+## Focus duration vs temperature change
+
+So pulse duration has a weak to medium impact on temperature changes. Let's look at this in more detail:
+
+```{r eval=FALSE}
+
+p <- df_pulse %>% 
+  # filter(temp_diff < 0) %>%   2
+  # filter(pulse_duration < 250) %>% 
+  ggplot(aes(x = pulse_duration, y = temp_diff, label = pulse_group)) +
+    geom_point(aes(colour = ferment_bool)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment_bool, scales = "free_x")
+
+ggplotly(p)
+
+```
+
+Non-fermentation (red) notes:
+
+- Non-fermentation pulses are largely random. Take away the extremes and you have a random scatter
+- The majority of non-fermentation pulses cluster around 0 degrees. 
+- It seems pulses need to be at least 40 minutes to reduce temperatures, but the duration can't be the only impact here due to its randomness
+
+Fermentation:
+
+- The fermentation pulses tell a more pronounced association
+- No major positive spikes during fermentation. Pulsing seems more focussed.
+- Pulses shorter than 10-20 minutes tend to not have a cooling effect. 
+- The association shows two **distinct patterns**: (KEY)
+  1. Pulses below ~85 minutes show a clear negative correlation to `temp_diff`
+  2. Pulses above ~85 minutes are random wrt `temp_diff`
+
+Does this differ across the three fermentations?
+
+```{r eval=FALSE}
+
+# Full durations
+p1 <- df_pulse %>% 
+  filter(ferment_bool) %>%
+  ggplot(aes(x = pulse_duration, y = temp_diff, label = pulse_group)) +
+    geom_point(aes(colour = ferment)) +
+    geom_smooth(method = "loess") +
+    # facet_wrap(~ ferment, scales = "free_x")
+    facet_wrap(~ ferment) +
+    labs(title = "Fermentation faceted by period | all durations")
+
+# <= 85 minutes
+p2 <- df_pulse %>% 
+  filter(ferment_bool) %>%
+  filter(pulse_duration <= 85) %>%
+  ggplot(aes(x = pulse_duration, y = temp_diff, label = pulse_group)) +
+    geom_point(aes(colour = ferment)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment) +
+    labs(title = "Fermentation faceted by period | <= 85 minutes")
+
+# > 85 minutes
+p3 <- df_pulse %>% 
+  filter(ferment_bool) %>%
+  filter(pulse_duration > 85) %>%
+  ggplot(aes(x = pulse_duration, y = temp_diff, label = pulse_group)) +
+    geom_point(aes(colour = ferment)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment) +
+    labs(title = "Fermentation faceted by period | > 85 minutes")
+
+ggplotly(p1)
+ggplotly(p2)
+ggplotly(p3)
+
+```
+
+Fermentations 1 (Sep-09) and 2 (Oct-04) show the same pattern. Fermentation 3 (Oct-19) only has a single pulse period below 85 minutes. 
+
+But all three show a fairly random pattern for longer fermentations.
+
+But we shouldn't over-interpret. The gist is that most pulses during fermentation have a temperature reducing effects: (KEY)
+
+```{r eval=FALSE}
+
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  mutate(temp_change = ifelse(temp_diff > 0, "positive", "negative")) %>% 
+  group_by(temp_change, ferment) %>% 
+  count()
+
+```
+
+The ones that don't - tend to be short (under 20 min's).  (KEY)
+
+Further we see that up to ~85 minute pulses the temperature reduction increases with increasing duration. Beyond 85 min's the association seems random.
+
+(Check series)
+
+```{r eval=FALSE}
+
+ggplotly(chart_full_year)
+
+```
+
+## Rate of change during pulse
+
+We have a couple of slices to look at:
+
+- Fermentation vs non-fermentation
+- Pulses that work (roc < 0) vs pulses that don't work
+- Each fermentation period
+
+### Normal values
+
+Describe the slices by their normal values
+
+```{r eval=FALSE}
+
+# All
+df_pulse %>% 
+  select(roc) %>% 
+  summary()
+
+# Fermentation periods.
+df_pulse %>% 
+  group_by(ferment) %>% 
+  summarise(
+    min = min(roc),
+    max = max(roc),
+    median = median(roc),
+    mean = mean(roc),
+  )
+
+# Fermentation periods and working pulses (< 0)
+df_pulse %>% 
+  filter(roc < 0) %>% 
+  group_by(ferment) %>% 
+  summarise(
+    min = min(roc),
+    max = max(roc),
+    median = median(roc),
+    mean = mean(roc),
+  )
+
+# Boxplots.
+df_pulse %>% 
+  filter(roc < 0) %>% 
+  ggplot() +
+    geom_boxplot(aes(x = roc, y = ferment), outlier.shape = NA) +
+    scale_x_continuous(limits = c(-1, 0)) +
+    labs(title = "Comparing normal values across fermentation periods", subtitle = "ROC < 0, no outliers")
+
+```
+
+Focussing on the working pulses (ROC < 0) the no-fermentation-pulses have significantly less impact than fermentation pulses. (KEY)
+
+Fermentation ROC's are between -0.25 and -=0.42 degrees/minute. (KEY)
+
+### Duration and ROC
+
+How does pulse duration impact on the ROC? This is striking and a variation of what we saw with the temperature change:
+
+```{r eval=FALSE}
+
+df_pulse %>% 
+  filter(ferment_bool & roc < 0) %>% 
+  ggplot(aes(x = pulse_duration, y = roc)) +
+    geom_point(aes(colour = ferment)) +
+    facet_grid(~ ferment) +
+    # geom_smooth(method = "lm")
+    geom_smooth(method = "loess")
+
+```
+
+There appears to be a negative relation between the duration and the (negative) roc: increased duration decreases the ROC.
+
+```{r eval=FALSE}
+
+df_pulse %>% 
+  filter(ferment_bool & roc < 0) %>% 
+  mutate(pulse_short = pulse_duration < 85) %>% 
+  ggplot(aes(x = pulse_duration, y = roc)) +
+    geom_point(aes(colour = pulse_short)) +
+    geom_smooth(method = "lm", aes(fill = pulse_short)) +
+    facet_wrap(~ ferment)
+
+
+```
+
+Nope, there isn't a clear pattern insisting on _clear associations of shorter pulses_ and _no associations of longer pulses._ Based on these few data points it's down to chance.
+
+However, we might be able to say that the shorter and longer pulses have a significantly different impact on the ROC:
+
+```{r}
+# Function to show density (roughly normal?) and do a T-test to check mean difference:
+get_t_test <- function(ferment_period) {
+  # Data
+  data <- df_pulse  %>% 
+    filter(ferment == ferment_period & roc < 0) %>% 
+    mutate(pulse_short = pulse_duration < 85)
+  
+  # Density chart
+  p <- ggplot(data) +
+    # geom_histogram(aes(x = roc)) +
+    geom_density(aes(x = roc)) +
+    facet_wrap(~ pulse_short)
+  
+  print(p)
+
+  # T Test
+  tryCatch(
+    t.test(data %>% filter(pulse_short) %>% pull(roc), data %>% filter(!pulse_short) %>% pull(roc)),
+    error = function(e) print(paste("Ferment period:", ferment_period, e))
+  )
+}
+
+```
+
+check it here:
+
+```{r eval=FALSE}
+
+get_t_test("Sep-09")
+get_t_test("Oct-04")
+get_t_test("Oct-19")
+  
+```
+
+And indeed - at least the Sep-09 and the Oct-04 fermentations show a sign. Difference between pulse duration smaller and greater than 85 minutes. (KEY)
+
+## Modulations
+
+- What is the modulation frequency during pulse cooling? 
+- Does it change and if so how?
+
+```{r eval=FALSE}
+
+df_pulse
+
+```
+
+### Check uniformity
+
+First thing, we should check is if there are notable frequency changes within pulse periods, or if the modulation is uniform.
+
+Let's check visually. We're only doing this for the fermentation periods
+
+```{r eval=FALSE}
+
+# Plot fermentation pulses.
+p_ferm <- df %>% 
+  filter(!is.na(pulse), ferment_bool) %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = status)) +
+    facet_wrap(~ pulse_group, scales = "free_x")
+
+# Plot is too large to view in, so save.
+ggsave(paste0(root_path,"/data/v3/pulse/pulse-modulations-fermentation.jpg"), p_ferm, height = 10000, width = 10000, units = "px")
+
+# Plot non-fermentation pulses. 
+p_nonferm <- df %>% 
+  filter(!is.na(pulse), !ferment_bool)%>% 
+  ggplot() +
+    geom_line(aes(x = time, y = status)) +
+    facet_wrap(~ pulse_group, scales = "free_x")
+
+ggsave(paste0(root_path,"/data/v3/pulse/pulse-modulations-non-fermentation.jpg"), p_nonferm, height = 10000, width = 10000, units = "px")
+
+```
+
+
+Visually, they appear to be homogeneous. (KEY)
+
+There are some really short pulse-groups we can probably remove, but the general picture is one of uniform oscillations.
+
+Let's look at the short ones (only fermentation):
+
+- 19/09/2021 12:16
+- 23/09/2021 10:37
+
+```{r eval=FALSE}
+
+df %>% 
+  filter(pulse_group == "19/09/2021 12:16" | pulse_group == "23/09/2021 10:37")
+
+```
+
+Let's remove them from df_pulse:
+
+Note, that I won't remove the non-fermentation ones here (I wasn't interested in them until later - and am now thinking, we should remove them in the analysis whenever it makes sense).
+
+```{r}
+
+(df_pulse <- df_pulse %>% 
+  filter(pulse_group != "19/09/2021 12:16" & pulse_group != "23/09/2021 10:37"))
+
+```
+
+Next, we should try and get a numeric summary of the variations..
+
+```{r}
+
+(df_modulation <- df %>% 
+  # filter(!is.na(pulse), ferment_bool) %>% 
+  filter(!is.na(pulse)) %>%
+  mutate(
+    status_diff_2 = ifelse(status == 2, diff, NA_real_),
+    status_diff_3 = ifelse(status == 3, diff, NA_real_)
+  ) %>% 
+  group_by(pulse_group) %>% 
+  summarise(
+    pulse_dur_2_mean_sec = mean(status_diff_2, na.rm = TRUE),
+    pulse_dur_3_mean_sec = mean(status_diff_3, na.rm = TRUE),
+    pulse_duration_2 = sum(status_diff_2, na.rm = TRUE) / 60,
+    pulse_duration_3 = sum(status_diff_3, na.rm = TRUE) / 60,
+  ) %>% 
+  mutate(
+    cooling_percent_mean = pulse_dur_3_mean_sec / (pulse_dur_2_mean_sec + pulse_dur_3_mean_sec),
+    cooling_percent = pulse_duration_3 / (pulse_duration_2 + pulse_duration_3),
+  ) %>% 
+  ungroup())
+
+```
+
+`pulse_duration_status_2_*` variables captures the time in seconds (mean) / minutes (sum) each pulse_group _doesn't_ cool
+
+`pulse_duration_status_3_*` variables captures the time in seconds (mean) / minutes (sum) each pulse_group _does_ cool
+
+It does so by adding the `time_diff` for each row (either 2 or 3) which is calculated in the main `df` as the _next row_'s time - the _current row_'s time (in minutes).
+
+`cooling_duration_*` variables show the percentage of time the pulse group is cooling.
+
+Let's look at their distributions:
+
+```{r eval=FALSE}
+
+skimr::skim(df_modulation)
+df_modulation %>% ggplot() + geom_density(aes(cooling_percent_mean))
+df_modulation %>% ggplot() + geom_density(aes(cooling_percent_sum))
+
+```
+
+### Add modulations to df_pulse
+
+Let's join them with df_pulse. 
+
+As a side-note, there are 2 pulses in the modulation frame compared to df_pulse (the latter two I've just removed):
+
+```{r eval=FALSE}
+
+one <- df_modulation %>% pull(pulse_group) 
+two <- df_pulse %>% pull(pulse_group) 
+
+(not_in_pulse <- df_modulation %>% filter(!one %in% two))
+
+```
+
+...we won't add them back to df_pulse.
+
+Join the data:
+
+```{r}
+
+# Check
+df_pulse %>% 
+  left_join(df_modulation, by = "pulse_group") %>% 
+  # filter(ferment_bool) %>% 
+  mutate(check = pulse_duration - pulse_duration_2_sum - pulse_duration_3_sum) %>% 
+  arrange(desc(check))
+  # arrange(check)
+
+# Do
+(df_pulse <- df_pulse %>%
+  left_join(df_modulation, by = "pulse_group") %>% 
+  select(
+    time,
+    ferment_bool,
+    ferment,
+    pulse_group,
+    temp,
+    temp_diff,
+    pulse_duration,
+    roc,
+    pulse_dur_2_mean_sec,
+    pulse_dur_3_mean_sec,
+    cooling_percent,
+    pulse_duration_2,
+    pulse_duration_3,
+    pulse_number,
+  ))
+
+```
+
+### Frequencies
+
+Normal values:
+
+```{r}
+
+df_pulse %>% 
+  select(starts_with("pulse"), cooling_percent) %>% 
+  skimr::skim()
+
+```
+
+Some notes regarding modulations during fermentation: (KEY)
+
+- An average pulse period is 77 minutes long - 62 of which are non-cooling, 16 of which are cooling (right skewed with high outliers).
+- In average 17% of each pulse period is cooling = 83% non-cooling
+- The average duration of an individual cooling section is 19 seconds 
+- The average duration of an individual non-cooling section is 95 seconds.
+
+Looking at cooling percentages across the fermentation periods shows similar distributions with different gaps:
+
+```{r}
+
+# Data
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  arrange(desc(cooling_percent))
+
+# Density
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  ggplot() +
+    geom_density(aes(x = cooling_percent))
+
+# Frequencies
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  ggplot() +
+    geom_bar(aes(x = reorder(pulse_group, -cooling_percent), y = cooling_percent, fill = ferment), stat = "identity") +
+    facet_wrap(~ ferment)
+
+```
+
+```{r}
+
+(p <- df_pulse %>% 
+  filter(ferment_bool) %>% 
+  ggplot(aes(x = cooling_percent, y = roc)) +
+    geom_point() +
+    geom_smooth(method = "lm"))
+
+plotly::ggplotly(p)
+
+df_pulse %>% 
+  filter(ferment_bool) %>% 
+  select(roc, cooling_percent, pulse_dur_2_mean_sec, pulse_dur_3_mean_sec) %>% 
+  GGally::ggpairs()  
+  
+```
+
+There's no association between cooling percent and the rate of change. 
+
+In other words modulation can be chosen based on economic benefits (within the given range of modulation) (KEY)

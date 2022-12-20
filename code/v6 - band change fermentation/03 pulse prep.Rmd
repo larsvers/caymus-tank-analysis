@@ -1,0 +1,257 @@
+---
+title: "Pulse cooling identification | v6"
+output: html_notebook
+---
+
+This notebook requires the dataset `df_clean_ferment.csv` produced in  v6' `02 ferment.Rmd` which is the main df plus the additional fermentation variables.
+
+The notebook creates a df_pulse summarising pulse colling periods.
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/D1"
+```
+
+# Load required data
+
+```{r}
+(df <- readr::read_csv(
+  paste0(path_root, path_data, path_tank, '/clean/df_clean_ferment.csv'), 
+  col_types = cols(
+    .default = "?", 
+    state = "i",
+    mode_type = "i",
+    ferment = "c",
+    ferment_period = "c",
+    ferment_point = "c",
+    ferment_phase = "c",
+    ferment_period_phase = "c"))
+ )
+```
+
+# Build pulse cooling dataset
+
+Here we want to focus in on the pulse periods. We do so by 
+
+1. identify the pulses in the main data (resulting in `df_pulse_marked`)
+2. build a pulse focused dataset (`df_pulse`)
+
+## Check fermentation curves and statuses
+
+```{r eval=FALSE}
+
+# How does status look over time?
+ggplot(df) +
+  geom_line(aes(x = time, y = status))
+
+# How many different statuses have we got?
+df %>% 
+  group_by(status_label) %>% 
+  count()
+
+# How many different statuses do we get for each fermentation period?
+df %>% 
+  group_by(ferment_period, status_label) %>% 
+  count()
+
+# Vis brix
+df %>% 
+  filter(ferment_bool) %>%   
+    ggplot() +
+      geom_line(aes(x = time, y = brix)) +
+      facet_wrap(~ferment_period, scales = "free_x")
+
+# Vis status
+df %>% 
+  filter(ferment_bool) %>%   
+    ggplot() +
+      geom_line(aes(x = time, y = status)) +
+      facet_wrap(~ferment_period, scales = "free_x")
+
+```
+
+## Identify pulse periods
+
+This is based on v3's `.../v4 - band change non-fermentation/02 create pulse data.Rmd` with some major changes and improvements (above all excluding the manual step!).
+
+Steps 1) and 2) focus in on the status events only
+
+Step 3) creates a time diff variable for between each status change
+
+Step 4) creates the `pulse` variable based on 2/3 oscillation
+
+Step 5) check for each pulse that it's not too long (threshold: 600)
+
+Step 6) adds identifiers for start and end events to each pulse period
+
+Step 7) expels all pulse periods that only have 2 pulses
+
+Step 8) adds a unique identifier to each pulse period so we can group and analyse them individually
+
+Step 9) just reshuffles the data a little
+
+```{r}
+
+df_pulse_marked <- df %>% 
+  # 1) Keep status events only.
+  filter(!is.na(status)) %>% 
+  
+  # 2) Keep only rows with status changes.
+  mutate(status_change = ifelse(lag(status) == status, FALSE, TRUE)) %>% 
+  filter(status_change) %>% 
+  select(-status_change) %>% 
+  
+  # 3) Calculate time difference between status changes.
+  mutate(diff = as.numeric(lead(time) - time)) %>% 
+  
+  # 4) Create the pulse var based on the status pulse patterns (2-3-2-...).
+  mutate(pulse = ifelse(
+    lag(status) != status & lead(status) != status
+    & ((status == 3 | status == 2) & (lag(status) == 3 | lag(status) == 2) & (lead(status) == 3 | lead(status) == 2))
+    , 'pulse', NA)) %>% 
+  
+  # 5) Untag pulses longer than 600 seconds.
+  mutate(pulse = ifelse(diff > 600, NA, pulse)) %>% 
+  
+  # 6) Add start and end identifier to each pulse section.
+  mutate(pulse = ifelse(is.na(lag(pulse)) & pulse == 'pulse' & lead(pulse) == 'pulse', 'start', pulse)) %>%
+  mutate(pulse = ifelse(lag(pulse) == 'pulse' & pulse == 'pulse' & is.na(lead(pulse)), 'end', pulse)) %>% 
+  
+  # 7) Untag pulses with just two pulses (need two mutates as it has to work sequentially).
+  mutate(pulse = ifelse(is.na(lag(pulse)) & is.na(lead(pulse, n = 2)), NA, pulse)) %>%
+  mutate(pulse = ifelse(is.na(lag(pulse)) & is.na(lead(pulse)), NA, pulse)) %>%
+  
+  # 8) Add a unique identifier to each pulse period.
+  mutate(pulse_group = ifelse(pulse == 'start', as.character(time), NA)) %>%
+  fill(pulse_group) %>%
+  mutate(pulse_group = ifelse(is.na(pulse), NA, pulse_group)) %>% 
+
+  # 9) Reshuffle.
+  select(time, temp, setpoint, status, brix, diff, pulse, pulse_group, everything())
+
+```
+
+Check the outcome...
+
+```{r}
+
+df_pulse_marked
+view(df_pulse_marked)
+
+```
+
+Add the pulse_group var to the full dataset and write it...
+
+```{r}
+
+df_clean_ferment_pulse <- df %>% 
+  left_join(df_pulse_marked %>% select(time, pulse, pulse_group), by = "time") %>% 
+  mutate(pulse2 = pulse, pulse_group2 = pulse_group) %>% 
+  fill(pulse2, pulse_group2) %>%
+  mutate(
+    pulse = ifelse(pulse2 == "pulse", pulse2, pulse),
+    pulse_group = ifelse(pulse2 == "pulse", pulse_group2, pulse_group)
+  ) %>% 
+  select(-c(pulse2, pulse_group2))
+
+df_clean_ferment_pulse %>% write_csv(paste0(path_root, path_data, path_tank, "/clean/df_clean_ferment_pulse.csv"), na = "")
+
+```
+
+
+
+## Create pulse dataset
+
+This is based on `.../v4 - band change non-fermentation/03 analysis v4.Rmd`` with some changes - mainly recognising some new variables / variable names.
+
+In a next step we produce a dataset that just focuses on the pulse cooling periods. Each row in this dataset is a pulse cooling period and each variable summarises a specific pulse period characteristic:
+
+```{r}
+
+# Number of modulations.
+pulse_num <- df_pulse_marked %>% 
+  group_by(pulse_group) %>% 
+  count() %>% 
+  mutate(pulse_group_start = lubridate::parse_date_time(pulse_group, orders = "Y-m-d H:M:S")) %>% 
+  arrange(pulse_group_start) %>%
+  ungroup()
+
+# Modulation summary variables.
+df_modulation <- df_pulse_marked %>% 
+  filter(!is.na(pulse)) %>%
+  mutate(
+    status_diff_2 = ifelse(status == 2, diff, NA_real_),
+    status_diff_3 = ifelse(status == 3, diff, NA_real_)
+  ) %>% 
+  group_by(pulse_group) %>% 
+  summarise(
+    pulse_dur_2_mean_sec = mean(status_diff_2, na.rm = TRUE), # avg non-cooling seconds
+    pulse_dur_3_mean_sec = mean(status_diff_3, na.rm = TRUE), # avg cooling seconds
+    pulse_dur_2 = sum(status_diff_2, na.rm = TRUE) / 60, # non-cooling in minutes
+    pulse_dur_3 = sum(status_diff_3, na.rm = TRUE) / 60, # cooling in minutes
+  ) %>% 
+  mutate(
+    cooling_percent = pulse_dur_3 / (pulse_dur_2 + pulse_dur_3), # cooling percent
+  ) %>% 
+  ungroup()
+
+df_modulation
+
+```
+
+
+```{r}
+
+# Main pulse period data.
+df_pulse <- df_pulse_marked %>%
+  filter(pulse == "start" | pulse == "end") %>% 
+  select(time, ferment, ferment_bool, ferment_period, ferment_phase, ferment_period_phase, pulse, pulse_group, temp) %>% 
+  mutate(temp_diff = ifelse(pulse == "start", as.numeric(lead(temp) - temp), NA))  %>% 
+  mutate(pulse_duration = ifelse(pulse == "start", as.numeric(lead(time) - time), NA))  %>% 
+  filter(pulse == "start") %>% 
+  select(-pulse) %>%
+  left_join(pulse_num %>% select(pulse_group, pulse_number = n), by = "pulse_group") %>% 
+  mutate(pulse_frequency = pulse_number / pulse_duration) %>% 
+  mutate(roc = temp_diff / (pulse_duration/60))  # temperature change per hour (pulse_duration is in minutes, hence /60 is in hours)
+
+# Add modulation variables to main data. 
+(df_pulse <- df_pulse %>%
+  left_join(df_modulation, by = "pulse_group") %>% 
+  select(
+    time,
+    ferment,
+    ferment_bool,
+    ferment_period,
+    ferment_phase,
+    ferment_period_phase,
+    pulse_group,
+    temp,
+    temp_diff,
+    pulse_duration,
+    roc,
+    pulse_dur_2_mean_sec,
+    pulse_dur_3_mean_sec,
+    cooling_percent,
+    pulse_dur_2,
+    pulse_dur_3,
+    pulse_number,
+    pulse_frequency,
+  ))
+
+```
+# Write
+
+```{r}
+
+df_pulse %>% write_csv(paste0(path_root, path_data, path_tank, "/clean/df_pulse_periods.csv"), na = "")
+
+```
+

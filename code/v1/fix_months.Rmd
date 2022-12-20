@@ -1,0 +1,210 @@
+---
+title: "Special D1 months data join issue"
+output: html_notebook
+---
+
+# D1 tank data fixes
+
+Problems found in the data were explored here and manuallly changed for the raw xls data (the files that have all variables in `data/raw/D1`). The main problem was:
+
+"one specific question that came up was for the D1 August data, which shows April dates instead. I assume August just got labelled wrong, but we’re missing the 31st"
+
+Rick from Caymus then send over the unjoined data (one file per months) which I checked here.
+
+## November
+
+I mistakenly did November first, which turned out to be good as it had some duplicates to be cleaned out:
+
+```{r}
+
+st <- readxl::read_xlsx("../data/raw/D1 unjoined/NovState.xlsx")
+sp <- readxl::read_xlsx("../data/raw/D1 unjoined/NovSPPV.xlsx")
+p <- readxl::read_xlsx("../data/raw/D1 unjoined/NovPulse.xlsx")
+b <- readxl::read_xlsx("../data/raw/D1 unjoined/NovBRIX.xlsx")
+
+nov <- st %>% 
+  left_join(sp, by = "t_stamp") %>% 
+  left_join(p, by = "t_stamp") %>% 
+  left_join(b, by = "t_stamp")
+
+skimr::skim(nov)
+
+```
+
+
+Add some new dat var's
+
+```{r}
+
+nov <- nov %>% 
+  mutate(
+    year = lubridate::year(t_stamp),
+    month = lubridate::month(t_stamp, label = TRUE),
+    day = lubridate::wday(t_stamp, label = FALSE),
+    wday = lubridate::wday(t_stamp, label = TRUE)
+  )
+
+nov %>% 
+  filter(is.na(sp))
+
+```
+
+
+The missings are all December values. Let's remove them..
+
+```{r}
+nov <- nov %>% 
+  filter(month == 'Nov')
+
+View(nov)
+```
+
+Let's check for duplicates:
+
+```{r}
+
+nov %>% 
+  select(t_stamp, state, sp, eng, pulsing, brix) %>% 
+  distinct()
+
+nov %>% 
+  # group_by(t_stamp, state, sp, eng, pulsing, brix) %>% 
+  group_by(t_stamp) %>%
+  count() %>% 
+  filter(n > 1)
+
+readr::write_csv(nov, "nov.csv") # to check in excel
+
+```
+
+I checked in excel and it turns out that for each of the above quarter hours (there 2021-11-0 1am-1:45am) we have 8 rows, which differ in `eng` and `brix`. As all values are equally close to that quarter hour's average of the respective variable, 
+
+I will take a random row:
+
+```{r}
+
+nov <- nov %>% 
+  distinct(t_stamp, .keep_all = T)
+
+readr::write_csv(nov, "nov_clean.csv") # to feed back into the main load/explore script...
+
+```
+
+## April
+
+Check April (which previously had all August cases)
+
+```{r}
+
+st <- readxl::read_xlsx("../data/raw/D1 unjoined/AprState.xlsx")
+sp <- readxl::read_xlsx("../data/raw/D1 unjoined/AprSPPV.xlsx")
+b <- readxl::read_xlsx("../data/raw/D1 unjoined/AprBRIX.xlsx")
+
+apr <- st %>% 
+  left_join(sp, by = "t_stamp") %>% 
+  left_join(b, by = "t_stamp")
+
+skimr::skim(apr)
+
+```
+
+
+April data looking good. Export for the main load/explore:
+
+```{r}
+apr %>% readr::write_csv("apr_final.csv")
+```
+
+
+## August
+
+Check August (which previously was not available)
+
+```{r}
+
+st <- readxl::read_xlsx("../data/raw/D1 unjoined/AugState.xlsx")
+sp <- readxl::read_xlsx("../data/raw/D1 unjoined/AugSPPV.xlsx")
+b <- readxl::read_xlsx("../data/raw/D1 unjoined/AugBRIX.xlsx")
+
+aug <- st %>% 
+  left_join(sp, by = "t_stamp") %>% 
+  left_join(b, by = "t_stamp")
+
+skimr::skim(aug)
+
+```
+
+
+Also looking good. Export for the main load/explore:
+
+```{r}
+aug %>% readr::write_csv("aug_final.csv")
+```
+
+
+## March
+
+March had 4 rows too few (requires the main file to be in a `df` object).
+
+```{r}
+# Check manually.
+df %>% 
+  filter(month == "Mar") %>% 
+  write_csv("mar.csv")
+
+# Add a time difference var.
+(diff_check <- df %>% 
+  filter(month == "Mar") %>% 
+  mutate(diff = as.numeric(t_stamp - lag(t_stamp - 1))))
+  
+# Check if there are longer differences between rows?
+diff_check %>% 
+  group_by(diff) %>% 
+  count()
+
+# Look at the case.
+diff_check %>% 
+  filter(diff > 16)
+  
+# Look at the case in its environment.
+diff_check %>% 
+  filter(t_stamp > lubridate::ymd_h("2021-03-14 1"),
+         t_stamp < lubridate::ymd_h("2021-03-14 4"))
+```
+
+On 2021-03-14 there's an hour missing: 02:00, 02:15, 02:30 and 02:45.
+
+These are also missing in the ra ("uncompiled") files from Rick/Caymus. So I've filled these gaps in **the base files loaded in** with an average of the previous and the next value of the gap.
+
+## April and June
+
+...had some duplicate rows for the first quarter hour from the previous months. Manullay removed from the D1 xls files
+
+# F2 tank data fixes
+
+## March
+
+The Februray dataset had the first 288 March quarter hours with NA state data. Removed in the Feb xls data
+
+Also, on 14-03 we had the 2am quarter hours missing which I discovered like this:
+
+(`df` needs the be the prepped F1 frame)
+
+```{r}
+lag_check <- df %>% 
+  filter(month == "Mar") %>% 
+  mutate(diff = t_stamp - lag(t_stamp - 1)) 
+
+lag_check %>% 
+  group_by(diff) %>% 
+  count()
+
+lag_check %>% 
+  filter(diff > 16)
+
+lag_check %>% 
+  filter(t_stamp > lubridate::ymd_h("2021-03-14 1"),
+         t_stamp < lubridate::ymd_h("2021-03-14 4"))
+```
+
+And changed manually to reflect the average of the 1:45 and the 3:00 o'clock quarter hour.

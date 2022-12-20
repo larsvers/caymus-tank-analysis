@@ -1,0 +1,203 @@
+---
+title: "Data prep v6 - part: manual fermentation period and phase detection"
+output: html_notebook
+---
+
+This notebook is a legacy piece from the `02 prep.Rmd` that found fermentation periods and phases by eye / manually, which worked great for a single dataset to understand how they split up, distributed, and looked. 
+
+However, this becomes tedious for many datasets and we want an automatic detection for ignition anyway so I took this out and keep it here just for historic purposes and in case we for some reaon need to fall back on it.
+
+---
+
+This notebook requires the dataset produced in  v6' `01 load.Rmd`. 
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(pracma)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/D1"
+```
+
+# Load required data
+
+```{r}
+(df <- readr::read_csv(
+  paste0(path_root, path_data, path_tank, '/clean/df_clean.csv'), 
+  col_types = cols(.default = "?", state = "i", mode_type = "i")))
+```
+
+
+# Identify and mark fermentation periods
+
+Identify fermentation periods by eye
+
+```{r}
+
+(p1 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix"), colour = "steelblue"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = status, colour = "status"), colour = "tomato"))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+## Manual fermentation curve detection
+
+Next we identify the fermentation periods by eye. The result will be a `fermentation` variable identifying the full fermentation period plus a `fermentation_phase`variable identifying three phases for each fermentation describing the specific characteristics of the curve:
+
+- Phase 1: pre-fermentation
+- Phase 2: fermentation
+- Phase 3: post-fermentation
+
+These are defined by four "plot points":
+
+- Point 1: brix up to fermentation start levels (around 20/30 brix)
+- Point 2: brix decreases notable
+- Point 3: brix mainly remains below 0 but still fluctuates
+- Point 4: brix remains below 0 and steady and/or drops off
+
+These are currently identified by eye! Automated plot point detection is possible. It would be a combination of raw data (points 1 and maybe 4) and smoothed data (points, 2, 3 and in some cases 4) but would be a bit of a project.
+
+Here are the dates for tank D1:
+
+2021
+- Sep-14
+  - 2021-09-14 13:23:29 (Point 1)
+  - 2021-09-17 03:48:09 (Point 2)
+  - 2021-09-23 18:43:32 (Point 3)
+  - 2021-09-26 09:10:18 (Point 4)
+- Oct-15
+  - 2021-10-02 09:18:37 (Point 1)
+  - 2021-10-05 19:49:58 (Point 2)
+  - 2021-10-10 15:31:12 (Point 3)
+  - 2021-10-13 09:36:14 (Point 4) quite erratic
+- Oct-19
+  - 2021-10-19 14:33:59 (Point 1)
+  - 2021-10-22 12:08:37 (Point 2)
+  - 2021-10-27 06:31:00 (Point 3)
+  - 2021-10-30 13:10:28 (Point 4)
+- Nov-01
+  - 2021-11-01 11:10:29 (Point 1)
+  - 2021-11-01 19:32:49 (Point 2)
+  - 2021-11-04 21:54:27 (Point 3)
+  - 2021-11-13 05:21:18 (Point 4) veery long and erratic phase 3
+
+2022
+- Aug-21
+  - 2022-08-21 11:37:45 (Point 1)
+  - 2022-08-22 07:32:01 (Point 2)
+  - 2022-09-01 07:54:44 (Point 3)
+  - 2022-09-07 07:28:28 (Point 4) no steady phase, just drop off
+- Sep-09
+  - 2022-09-09 07:18:13 (Point 1)
+  - 2022-09-12 01:35:38 (Point 2)
+  - 2022-09-16 22:50:10 (Point 3)
+  - 2022-09-19 16:46:19 (Point 4) very very noisy phase 3, followed by drop off
+- Sep-21
+  - 2022-09-21 12:51:17 (Point 1)
+  - 2022-09-24 00:47:58 (Point 2)
+  - 2022-09-27 18:03:00 (Point 3)
+  - 2022-09-28 20:11:54 (Point 4) drop off
+- Sep-29
+  - 2022-09-29 08:42:11 (Point 1)
+  - 2022-10-03 08:33:32 (Point 2)
+  - 2022-10-07 07:53:34 (Point 3)
+  - 2022-10-09 19:45:56 (Point 4) drop off
+
+```{r eval=FALSE}
+
+# Set fermentation periods.
+df <- df %>%
+  mutate(ferment_period = case_when(
+    time >= ymd_hms("2021-09-14 13:23:29") & time <= ymd_hms("2021-09-26 09:10:18") ~ "21-Sep-14",
+    time >= ymd_hms("2021-10-02 09:18:37") & time <= ymd_hms("2021-10-13 09:36:14") ~ "21-Oct-15",
+    time >= ymd_hms("2021-10-19 14:33:59") & time <= ymd_hms("2021-10-30 13:10:28") ~ "21-Oct-19",
+    time >= ymd_hms("2021-11-01 11:10:29") & time <= ymd_hms("2021-11-13 05:21:18") ~ "21-Nov-01",
+    time >= ymd_hms("2022-08-21 11:37:45") & time <= ymd_hms("2022-09-07 07:28:28") ~ "22-Aug-21",
+    time >= ymd_hms("2022-09-09 07:18:13") & time <= ymd_hms("2022-09-19 16:46:19") ~ "22-Sep-09",
+    time >= ymd_hms("2022-09-21 12:51:17") & time <= ymd_hms("2022-09-28 20:11:54") ~ "22-Sep-21",
+    time >= ymd_hms("2022-09-29 08:42:11") & time <= ymd_hms("2022-10-09 19:45:56") ~ "22-Sep-29",
+    TRUE ~ "no-ferment"
+  ))
+
+# Set fermentation period phases.
+df <- df %>%
+  mutate(ferment_phase = case_when(
+    time >= ymd_hms("2021-09-14 13:23:29") & time < ymd_hms("2021-09-17 03:48:09") ~ "Phase 1",
+    time >= ymd_hms("2021-09-17 03:48:09") & time < ymd_hms("2021-09-23 18:43:32") ~ "Phase 2",
+    time >= ymd_hms("2021-09-23 18:43:32") & time <= ymd_hms("2021-09-26 09:10:18") ~ "Phase 3",
+    time >= ymd_hms("2021-10-02 09:18:37") & time < ymd_hms("2021-10-05 19:49:58") ~ "Phase 1",
+    time >= ymd_hms("2021-10-05 19:49:58") & time < ymd_hms("2021-10-10 15:31:12") ~ "Phase 2",
+    time >= ymd_hms("2021-10-10 15:31:12") & time <= ymd_hms("2021-10-13 09:36:14") ~ "Phase 3",
+    time >= ymd_hms("2021-10-19 14:33:59") & time < ymd_hms("2021-10-22 12:08:37") ~ "Phase 1",
+    time >= ymd_hms("2021-10-22 12:08:37") & time < ymd_hms("2021-10-27 06:31:00") ~ "Phase 2",
+    time >= ymd_hms("2021-10-27 06:31:00") & time <= ymd_hms("2021-10-30 13:10:28") ~ "Phase 3",
+    time >= ymd_hms("2021-11-01 11:10:29") & time < ymd_hms("2021-11-01 19:32:49") ~ "Phase 1",
+    time >= ymd_hms("2021-11-01 19:32:49") & time < ymd_hms("2021-11-04 21:54:27") ~ "Phase 2",
+    time >= ymd_hms("2021-11-04 21:54:27") & time <= ymd_hms("2021-11-13 05:21:18") ~ "Phase 3",
+    time >= ymd_hms("2022-08-21 11:37:45") & time < ymd_hms("2022-08-22 07:32:01") ~ "Phase 1",
+    time >= ymd_hms("2022-08-22 07:32:01") & time < ymd_hms("2022-09-01 07:54:44") ~ "Phase 2",
+    time >= ymd_hms("2022-09-01 07:54:44") & time <= ymd_hms("2022-09-07 07:28:28") ~ "Phase 3",
+    time >= ymd_hms("2022-09-09 07:18:13") & time < ymd_hms("2022-09-12 01:35:38") ~ "Phase 1",
+    time >= ymd_hms("2022-09-12 01:35:38") & time < ymd_hms("2022-09-16 22:50:10") ~ "Phase 2",
+    time >= ymd_hms("2022-09-16 22:50:10") & time <= ymd_hms("2022-09-19 16:46:19") ~ "Phase 3",
+    time >= ymd_hms("2022-09-21 12:51:17") & time < ymd_hms("2022-09-24 00:47:58") ~ "Phase 1",
+    time >= ymd_hms("2022-09-24 00:47:58") & time < ymd_hms("2022-09-27 18:03:00") ~ "Phase 2",
+    time >= ymd_hms("2022-09-27 18:03:00") & time <= ymd_hms("2022-09-28 20:11:54") ~ "Phase 3",
+    time >= ymd_hms("2022-09-29 08:42:11") & time < ymd_hms("2022-10-03 08:33:32") ~ "Phase 1",
+    time >= ymd_hms("2022-10-03 08:33:32") & time < ymd_hms("2022-10-07 07:53:34") ~ "Phase 2",
+    time >= ymd_hms("2022-10-07 07:53:34") & time <= ymd_hms("2022-10-09 19:45:56") ~ "Phase 3",
+    TRUE ~ "no-ferment"
+  ))
+
+# Set fermentation helper variables.
+df <- df %>%
+  mutate(
+    ferment = ifelse(ferment_period == "no-ferment", "No fermentation", "Fermentation"),
+    ferment_bool = ifelse(ferment_period == "no-ferment", FALSE, TRUE),
+    ferment_phase_long = paste(ferment_period, ferment_phase)
+  )
+
+```
+
+Let's 's look at the fermentation curves and phases:
+
+```{r eval=FALSE}
+
+p <- df %>% 
+  filter(ferment_period != "no-ferment") %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = brix, color = ferment_phase)) +
+    facet_wrap(~ferment_period, scales = "free_x")
+
+plotly::ggplotly(p)
+
+```
+
+Check if the new vars make sense:
+
+- ferment_period
+- ferment
+- ferment_bool
+- ferment_phase
+- ferment_phase_long
+
+```{r eval=FALSE}
+
+df %>% 
+  group_by(ferment, ferment_bool, ferment_period, ferment_phase, ferment_phase_long) %>% 
+  count()
+
+```

@@ -1,0 +1,450 @@
+---
+title: "Explore"
+output: html_notebook
+---
+
+This script required the loaded and part-recoded frames from `load.Rmd` - either `df_d1` or `df_f2`
+
+```{r eval=false}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+library(lubridate)
+```
+
+Set the data (either from tank d1 or d2)
+
+```{r}
+df <- df_d1_prepped
+# df <- df_f2_prepped
+```
+
+# Discretising `state` and `sp`
+
+Have a closer look at `state`
+
+```{r eval=FALSE}
+df %>% 
+  group_by(state) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+df %>% 
+  select(state) %>% 
+  summary()
+```
+
+Lets check if this makes sense:
+
+```{r eval=FALSE}
+
+# Facet plot status and floored status
+df %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state), colour = "orange") +
+    facet_wrap(vars(month), scales = "free_x")
+
+# Facet plot status and floored status
+df %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = eng, colour = "temp")) +
+    geom_line(aes(x = t_stamp, y = sp, colour = "sp")) +
+    scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+    facet_wrap(vars(month), scales = "free")
+
+```
+
+Some issues here...
+
+The key issue is that the extraction algo extracted the discrete `state` and `sp` variables as part continuous as it iinterpolated between values. In fact `sp` is continuous but it's series should describe a step function.  An example is June:
+
+```{r eval=FALSE}
+
+month_selected <- "Jun"
+
+plot1 <- df %>% 
+  filter(month == month_selected) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "state")) +
+    scale_colour_manual("", breaks = c("ceil", "state"), values = c("skyblue", "orange")) +
+    scale_y_continuous(breaks = c(1,2,3)) +
+    labs(y = "")
+
+plot2 <- df %>% 
+  filter(month == month_selected) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = eng, colour = "temp")) +
+    geom_line(aes(x = t_stamp, y = sp, colour = "sp")) +
+    scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+    labs(y = "")
+
+gridExtra::grid.arrange(plot1, plot2, nrow = 2)
+
+```
+
+Question: at what points was the state 1, 2 or 3? And at what times was the setpoint (`sp`) which value?
+
+Answer: the answer is in the file `State and SP readings from raw data.xlsx` which is an extract of all `state` and `sp` readings **when they changed** from the raw data.
+
+Discussion: we should probably read these in and join them as a new variable. Alternatively, we could reverse-engineer the extraction algorithm, but it won't be a simple floor or ceiling exercise of the variables. We will need to distinguish previous slopes from orthogonal data changes (as in the June `sp` example) and some values don't go all the way up to integers like for example on the 29th of April at 18:30, which goes up to 2.999351:
+
+```{r eval=FALSE}
+apr <- df %>% 
+  filter(t_stamp > lubridate::ymd("2021-04-29"), t_stamp < lubridate::ymd("2021-04-30"))
+
+apr %>% View()
+
+apr %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state), colour = "skyblue")
+```
+
+Solution: in  the file `State and SP readings from raw data.xlsx` we prepare two sheets to join into the base file here. One sheet holds all discrete `state` and the other all `sp` values from the raw data matched to the _next_ quarter hour (the values are by minute, but I assume the correct way of logging would be by the next quarter hour). Time duplicates in one quarter hour are indicated (the latest value is being taken):
+
+```{r}
+df <- df_d1_prepped
+
+# Read in actual readings.
+state_actual <- readxl::read_excel("../data/raw/D1/State and SP readings from raw data.xlsx", sheet = "state")
+sp_actual <- readxl::read_excel("../data/raw/D1/State and SP readings from raw data.xlsx", sheet = "sp")
+
+state_actual
+sp_actual
+
+# Remove duplicates (keep the latest date/value - prepped in xls)
+state_actual <- state_actual %>% filter(is.na(remove_dupe)) %>% select(-remove_dupe)
+sp_actual <- sp_actual %>% filter(is.na(remove_dupe)) %>% select(-remove_dupe)
+
+# Prep df (remove all actual values that might have been added previously)
+df <- df %>% 
+  select(-starts_with("state_actual")) %>% 
+  select(-starts_with("sp_actual"))
+
+# Join.
+(df <- df %>% 
+  left_join(state_actual, by = "t_stamp") %>% 
+  left_join(sp_actual, by = "t_stamp"))
+  
+```
+
+All the non-set timepoints need to be filled, which happens in the following from **the value down**. The first value however is missing, which has been assumed by viewing the data:
+
+```{r}
+
+# Set first `state` value for `fill` to work (check with chart above)
+df[1,]$state_actual = 2
+
+# Set first `sp` value for `fill` to work (check with chart above and set the most likely value)
+df[1,]$sp_actual = 55
+
+# Fill the missing values (from top to bottom)
+df <- df %>% 
+  fill(state_actual, .direction = "down") %>% 
+  fill(sp_actual, .direction = "down")
+
+```
+
+Check the solution:
+
+```{r eval=FALSE}
+
+df %>% 
+  group_by(state_actual) %>% 
+  count()
+
+df %>% 
+  group_by(sp_actual) %>% 
+  count()
+
+```
+
+```{r eval=FALSE}
+
+# Facet plot status and floored status
+df %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("orange", "skyblue")) +
+    ylab("state") +
+    facet_wrap(vars(month), scales = "free_x")
+
+# Facet plot status and floored status
+df %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = eng, colour = "temp")) +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("temp", "extracted", "actual"), values = c("grey", "pink", "skyblue")) +
+    ylab("set point") +
+    facet_wrap(vars(month), scales = "free_x")
+
+```
+
+Check period with missing actual `state` and `sp` data
+
+There's no `state` and `sp` data from 19/10/21. `state` values from this day can go to 0.5 and there's still one `sp` value sloping up.
+
+```{r eval=FALSE}
+check <- df %>% 
+  filter(t_stamp > ymd("2021-10-19"))
+
+check %>% View()
+```
+
+
+## Checking `sp`:
+
+```{r eval=FALSE}
+
+# The whole period
+check %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("pink", "skyblue")) +
+    ylab("setpoint") +
+    facet_wrap(vars(month), scales = "free_x")
+
+# Check which numbers are in-between possible values
+check %>% 
+  group_by(sp) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  View()
+  
+# Result: slope between 19.10 and 
+
+# The October fun
+check %>% 
+  filter(t_stamp > ymd_h("2021-10-01 0"), t_stamp < ymd_h("2021-10-31 0")) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("pink", "skyblue")) +
+    ylab("setpoint") +
+    facet_wrap(vars(month), scales = "free_x")
+	
+```
+
+The slope from 19.10 moves to **2021-10-26 18:00:00** exactly. Assuming the extraction logic to be responsible for the slope, we'll take `sp_actual` up to Oct 26 and then switch to `sp`. 
+
+```{r eval=FALSE}
+
+# Check all.
+df %>% 
+  mutate(sp_final = ifelse(t_stamp > ymd_hms("2021-10-26 18:00:00"), sp, sp_actual)) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    geom_line(aes(x = t_stamp, y = sp_final, colour = "final")) +
+    scale_colour_manual("", breaks = c("extracted", "actual", "final"), values = c("pink", "skyblue", "grey")) +
+    ylab("setpoint") +
+    facet_wrap(vars(month), scales = "free_x")
+
+# Double check key months.
+p1 <- df %>% 
+  mutate(sp_final = ifelse(t_stamp > ymd_hms("2021-10-26 18:00:00"), sp, sp_actual)) %>% 
+  filter(month == "Oct" | month == "Nov" | month == "Dec") %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    geom_line(aes(x = t_stamp, y = sp_final, colour = "final")) +
+    scale_colour_manual("", breaks = c("extracted", "actual", "final"), values = c("pink", "skyblue", "grey")) +
+    ylab("setpoint") +
+    facet_wrap(vars(month), scales = "free_x")
+
+p2 <- df %>% 
+  mutate(sp_final = ifelse(t_stamp > ymd_hms("2021-10-26 18:00:00"), sp, sp_actual)) %>% 
+  filter(month == "Oct" | month == "Nov" | month == "Dec") %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = sp, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = sp_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual", "final"), values = c("pink", "skyblue", "grey")) +
+    ylab("setpoint") +
+    facet_wrap(vars(month), scales = "free_x")
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+```
+
+Yep, do it:
+
+```{r}
+
+(df <- df %>% 
+  mutate(sp_final = ifelse(t_stamp > ymd_hms("2021-10-26 18:00:00"), sp, sp_actual)))
+
+```
+
+
+
+
+## Checking `state`:
+
+```{r eval=FALSE}
+
+# The whole period
+check %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("orange", "skyblue")) +
+    ylab("state") +
+    facet_wrap(vars(month), scales = "free_x")
+
+# Check which numbers are in-between possible values
+check %>% 
+  group_by(state) %>% 
+  count() %>% 
+  arrange(desc(n)) 
+
+# Result: no values between 1 and 2 but many values between 2 and 3
+
+# The October fun
+check %>% 
+  filter(t_stamp > ymd_h("2021-10-23 18"), t_stamp < ymd_h("2021-10-26 18")) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("orange", "skyblue")) +
+    ylab("state") +
+    facet_wrap(vars(month), scales = "free_x")
+	
+```
+
+Assuming 2.5 is not a possible `state` value, we can probably decree that 
+
+after 19/10/21 anything higher than 2 is 3 (there are no figures between 1 and 2)
+
+```{r eval=FALSE}
+
+test <- df %>% 
+  mutate(state_blurb = ifelse(t_stamp < ymd("2021-10-19"), state_actual, ceiling(state)))
+
+test %>% 
+  filter(t_stamp > ymd_h("2021-10-23 18"), t_stamp < ymd_h("2021-10-26 18")) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    geom_line(aes(x = t_stamp, y = state_blurb, colour = "final")) +
+    scale_colour_manual("", breaks = c("extracted", "actual", "final"), values = c("orange", "skyblue", "green"))
+
+
+df %>% 
+  mutate(state_actual = ifelse(t_stamp < ymd("2021-10-19"), state_actual, ceiling(state))) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("orange", "skyblue")) +
+    facet_wrap(~month, scales = "free_x")
+
+# All apart from mid October seems fine. Let's focus in:
+
+oct_focus <- df %>% 
+  mutate(state_actual = ifelse(t_stamp < ymd("2021-10-19"), state_actual, ceiling(state))) %>% 
+  filter(t_stamp > ymd_h("2021-10-16 0"), t_stamp < ymd_h("2021-10-20 0"))
+
+oct_focus %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    scale_colour_manual("", breaks = c("extracted", "actual"), values = c("orange", "skyblue")) +
+    facet_wrap(~month, scales = "free_x")
+
+oct_focus %>% 
+  group_by(state) %>% 
+  count()
+
+oct_focus %>% View()
+
+```
+
+Wrt `state` it seems our ceiling function does the trick for all but the mid October values.
+
+As the last actual `state` reading from the raw data file is on **2021-09-25 07:15:00**, I will apply the ceiling function to any extracted `state` value after this date.
+
+Here's the final state recode:
+
+```{r}
+
+df <- df %>% 
+  mutate(state_final = ifelse(t_stamp > ymd_hms("2021-09-25 07:15:00"), ceiling(state), state_actual))
+ 
+df %>% 
+  filter(t_stamp > ymd_h("2021-09-25 0"), t_stamp < ymd_h("2021-12-31 0")) %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    geom_line(aes(x = t_stamp, y = state_final, colour = "final")) +
+    scale_colour_manual("", breaks = c("extracted", "actual", "final"), values = c("orange", "skyblue", "grey"))
+
+```
+
+
+## Check congruency between extracted and actual state 
+
+```{r}
+
+feb_ex <- df %>% 
+  filter(t_stamp > ymd("2021-02-25"), t_stamp < ymd("2021-02-27"))
+
+# feb_ex %>% View()
+
+p1 <- feb_ex %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = state, colour = "extracted")) +
+    # geom_line(aes(x = t_stamp, y = state_actual, colour = "actual")) +
+    geom_line(aes(x = t_stamp, y = state_final, colour = "final")) +
+    scale_colour_manual("", breaks = c("extracted", "final"), values = c("orange", "skyblue")) +
+    ylab("state") +
+    facet_wrap(vars(month), scales = "free_x")
+
+p2 <- feb_ex %>% 
+  ggplot() +
+    geom_line(aes(x = t_stamp, y = eng, colour = "temp")) +
+    # geom_line(aes(x = t_stamp, y = sp_actual, colour = "sp" actual)) +
+    geom_line(aes(x = t_stamp, y = sp_final, colour = "sp final")) +
+    scale_colour_manual("", breaks = c("temp", "sp final"), values = c("grey", "pink")) +
+    ylab("temp and sp") +
+    facet_wrap(vars(month), scales = "free_x")
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+  
+```
+
+There's a difference between extracted and final values in terms of when a state value got changed. Above Februrary example shows the extracted `state` to increase to 3 on Feb 25 at around 16:15pm and the final `state` to increase on Feb 26 at 0:30am. 
+
+I'm assuming the final `state` is correct, supported by the setpoint correlation.
+
+Rename frame and columns and remove unnecessary cols for next script...
+
+
+
+
+```{r}
+
+df_d1_recoded <- df %>% 
+  select(
+    t_stamp,
+    year,
+    month,
+    day,
+    wday,
+    temp = eng,
+    state_extracted = state,
+    state_actual,
+    state_final,
+    sp_extracted = sp,
+    sp_actual,
+    sp_final
+  )
+
+```
+
+
+
+
+

@@ -1,0 +1,478 @@
+---
+title: "Load v6"
+output: html_notebook
+---
+
+Analysis v6 is primarily (and initially) concerned with an analysis of any potential changes of the deadband changes applied by Caymus in April 22 on the **Fermentation** periods. This analysis compliments the v4 analysis which was concerned with any non-fermentation changes.
+
+This notebook is loading the 6th version of the data which should cover Jan 21 to Sep 22 data. It is build on and adapts v3's `load.Rmd`.
+
+MANUAL CHANGES BEFORE LOAD:
+
+- Remove last row if it shows the timestamp of the data extraction (this should be worked into the process)
+
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/C1"
+```
+
+# Check a single month (only for initial testing)
+
+Let's load June 21 as an example dataset. 
+
+```{r load-single, eval=FALSE}
+
+jun <- readxl::read_xlsx(paste0(path_root, path_data, path_tank, "/orig/JUN21.xlsx"))
+
+```
+
+Let's do a base reshape (removing Brix, renaming cols and removing full NA's)
+
+```{r base-reshape, eval=FALSE}
+
+# Get a base variable name vector to check the order of columns against.
+name_vector <- names(jun)
+all(names(jun) == name_vector)
+
+# Reshape.
+(jun_orig <- jun %>% 
+  select(time = 1, lower_pressure = 2, higher_pressure = 3, abv = 4, brix = 5, gravity = 6, temp = 7, mode_type = 8, setpoint = 9, state = 10, status = 11, pulsing = 12, starter = 13, indicator = 14, pulse_indicator = 15))
+
+
+```
+
+```{r eval=FALSE}
+
+jun_orig %>% summary()
+
+```
+
+Looking at this summary, we need to make ssure to:
+
+- remove all non June data (BEFORE we merge) I've done this manually for all D1 data
+- front-fill all values (AFTER we merge). This obviously can not be done for the first dataset.
+
+
+Let's look at temp:
+
+```{r vis-initial, eval=FALSE}
+
+jun_orig %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = temp), color = 'tomato') +
+    geom_line(aes(x = time, y = brix), color = 'steelblue')
+
+```
+
+
+
+# All files
+
+Load all files and check if their column names are all the same:
+
+```{r laod-all}
+
+# Get file names > remove unwanted files > get file_paths
+files <- list.files(path = paste0(path_root, path_data, path_tank, "/orig"))
+
+files_clean <- tibble(file_name = files) %>% 
+  filter(!str_starts(file_name, '~')) %>% # remove open books
+  pull(file_name)
+
+file_paths <- sapply(files_clean, function(file) { paste0(path_root, path_data, path_tank, "/orig/", file)  }, USE.NAMES = FALSE)
+
+# Read in all files.
+df_list <- lapply(file_paths, function (x) { readxl::read_xlsx(x) })
+
+# Check if all files columns are the same and in the same order
+name_vector <- names(df_list[[1]])
+
+lapply(df_list, function(x) { all(name_vector == names(x)) }) %>% 
+  unlist() %>% 
+  all()
+
+```
+
+If we get a TRUE out above, continue with throwing all individual frames into a single frame:
+
+```{r merge-data}
+
+# Join list items.
+df_orig <- bind_rows(df_list) %>% as_tibble()
+
+names(df_orig)
+
+```
+
+Check the renaming below is correct - if so: rename...
+
+```{r rename-cols}
+
+(df_orig <- df_orig %>% 
+  select(time = 1,
+         lower_pressure = 2,
+         higher_pressure = 3,
+         abv = 4,
+         brix = 5,
+         gravity = 6,
+         temp = 7,
+         mode_type = 8,
+         setpoint = 9,
+         state = 10,
+         status = 11,
+         pulsing = 12,
+         starter = 13,
+         indicator = 14,
+         pulse_indicator = 15))
+
+```
+
+Check cases per month
+
+```{r eval=FALSE}
+
+df_orig %>% 
+  mutate(month = lubridate::month(time, label = TRUE)) %>% 
+  group_by(month) %>% 
+  count()
+
+df_orig %>% 
+  mutate(month = lubridate::month(time, label = TRUE)) %>% 
+  group_by(month) %>% 
+  count()%>% 
+  ggplot() +
+    geom_bar(aes(x = month, y = n), stat = "identity")
+
+```
+
+We only have as many cases as there are events. So above seems to make sense considering Q3 will show fermentations.
+
+# Recode df
+
+Let's check for `time` NA's
+
+```{r eval=FALSE}
+
+# Check NA's which we'd remove.
+df_orig %>% filter(is.na(time))
+df_orig %>%
+  filter(
+    is.na(lower_pressure),
+    is.na(higher_pressure),
+    is.na(abv),
+    is.na(brix),
+    is.na(gravity),
+    is.na(temp),
+    is.na(mode_type),
+    is.na(setpoint),
+    is.na(state),
+    is.na(status),
+    is.na(pulsing),
+    is.na(starter),
+    is.na(indicator),
+    is.na(pulse_indicator)
+  )
+
+# Remove appropriately.
+# (df <- df_orig %>% filter(!is.na(temp)))
+# Write code for the 2nd case (all other vars NA)
+
+```
+
+Add date variables
+
+```{r add-date-vars}
+
+(df <- df_orig %>% 
+  mutate(
+    wday = lubridate::wday(time, label = TRUE),
+    day = lubridate::mday(time),
+    month = lubridate::month(time, label = TRUE),
+    year = lubridate::year(time),
+    hour = lubridate::hour(time)
+  ))
+
+```
+
+Sort by time! This is crucially important as the data has been joined in alphabetical order (2020-dec, 2021-apr, 2020-aug, ...)
+
+```{r}
+
+(df <- df %>% arrange(time))
+
+# df %>% view()
+# Check each month change manually:
+# write_csv(df, "test.csv")
+
+```
+
+# Fill values
+
+Most monthly dataset have NA's for:
+
+- lower_pressure
+- higher_pressure
+- abv
+- brix
+- gravity
+- temp
+- setpoint
+- status
+- state
+
+until a value is being added, so we need to fill the column with the previous value. 
+
+Tested by copying the data out and check each month change manually.
+
+This only works from the first value given per column (so the first NA's in the first month given can't be filled). Some fill testing here:
+
+```{r, eval=FALSE}
+
+# Check how many na's there are w/o filling
+df %>% 
+  filter(is.na(state) | is.na(status) | is.na(setpoint))
+
+# Check how many na's there are w filling
+df %>% 
+  fill(state, status, setpoint) %>% 
+  filter(is.na(state) | is.na(status) | is.na(setpoint))
+
+# Check how many NA's there are for each of the key vars (state, status, setpoint) per month
+df %>% 
+  fill(state, status, setpoint) %>% 
+  filter(is.na(state) | is.na(status) | is.na(setpoint)) %>% 
+  # group_by(year, month, state) %>% 
+  group_by(year, month, status) %>%
+  # group_by(year, month, setpoint) %>% 
+  count()
+
+df %>% 
+  group_by(year, month, status) %>%
+  # group_by(year, month, setpoint) %>% 
+  count()
+
+
+```
+
+Now fill the values:
+
+```{r}
+
+(df <- df %>% 
+  tidyr::fill(
+    lower_pressure,
+    higher_pressure,
+    abv,
+    brix,
+    gravity,
+    temp,
+    setpoint,
+    status,
+    state
+  ))
+
+```
+
+Check in which months we still have missings in the filled values:
+
+```{r eval=FALSE}
+
+df %>% 
+  filter(
+    is.na(lower_pressure) |
+    is.na(higher_pressure) |
+    is.na(abv) |
+    is.na(brix) |
+    is.na(gravity) |
+    is.na(setpoint) |
+    is.na(status) |
+    is.na(state)
+  ) %>% 
+  group_by(year, month) %>% 
+  count()
+
+```
+
+It's ok to have those in the first months of the dataset. In the case of tank D1 for example that's down to the (not used) state variable coming in not before March.
+
+Next steps:
+
+- Completely empty columns
+- Duplicates (all, just time)
+- Check Summary if we're missing sth
+
+# Set status labels
+
+```{r}
+
+df <- df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "0 - error",
+    status == 1 ~ "1 - off",
+    status == 2 ~ "2 - on (not cooling)",
+    status == 3 ~ "3 - on (cooling)",
+    status == 10 ~ "10 - low temp alarm (not cooling)",
+    status == 11 ~ "11 - low low temp alarm (not cooling)",
+    status == 12 ~ "12 - high temp alarm (cooling)",
+    status == 13 ~ "13 - high high temp alarm (cooling)",
+    status == 14 ~ "14 - low temp alarm (not cooling)",
+    status == 15 ~ "15 - low low temp alarm (not cooling)",
+    status == 16 ~ "16 - high temp alarm (cooling)",
+    status == 17 ~ "17 - high high temp alarm (cooling)",
+  ))
+
+```
+
+# Check for columns with only NA's
+
+```{r}
+
+# Check summaries
+df %>% summary()
+
+# Check which columns only contain NA's
+df[colSums(!is.na(df)) == 0]
+
+# Remove all NA cols
+df <- df %>% select(where(~sum(!is.na(.x)) > 0))
+
+```
+
+
+# Deal with duplicates
+
+Let's check if there are any full duplicates - across all variables:
+
+```{r}
+
+# Check.
+df %>% 
+  group_by(
+    lower_pressure,
+    higher_pressure,
+    abv,
+    brix,
+    gravity,
+    time,
+    setpoint,
+    status,
+    state
+  ) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n))
+
+# Do.
+(df <- df %>% 
+  distinct(
+    lower_pressure,
+    higher_pressure,
+    abv,
+    brix,
+    gravity,
+    time,
+    setpoint,
+    status,
+    state,
+    .keep_all = TRUE))
+
+```
+
+Let's check if there are any dupes just for the datetime:
+
+```{r eval=FALSE}
+
+# Check for time dupes
+df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n))
+
+# Get a vector of all time datetimes.
+time_dupes <- df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+  pull(time)
+
+# Check it..
+time_dupes %>% head()
+
+# Look at only the dupe times (actual and dupe)
+df %>% 
+  filter(time %in% time_dupes)
+
+```
+
+I'd say, we should always take the **last** value of the datetime dupes. As this one will capture the most recent event. 
+
+```{r}
+
+# Get a vector of all duplicate datetimes.
+time_dupes <- df %>% 
+  group_by(time) %>% 
+  count() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+  pull(time)
+
+# 1) Find the dupes > 2) find the ones to keep > 3) find the ones to remove
+(df <- df %>% 
+  mutate(dupe = ifelse(time %in% time_dupes, 1, 0)) %>% 
+  mutate(keep = ifelse(dupe == 1 & time != lead(time), 1, 0)) %>% 
+  mutate(remove = ifelse(dupe == 1 & keep != 1, 1, 0)) %>% 
+  filter(remove != 1) %>% 
+  select(-c(dupe, keep, remove)))
+  
+```
+
+
+# Visualise all data
+
+Let's look at all data:
+
+```{r vis-df}
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint"))
+
+(p2 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = state, colour = "state")) +
+  geom_line(aes(y = status, colour = "status")) +
+  scale_colour_manual("", breaks = c("state", "status"), values = c("lightskyblue", "orange")))
+
+(p3 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix"), colour = "steelblue"))
+
+gridExtra::grid.arrange(p1, p2, p3, nrow = 3)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+plotly::ggplotly(p3)
+
+```
+
+Makes sense at first glance. D1 had 4 fermentation in 21 and 4 in 22!
+
+
+# Write 
+
+```{r}
+
+write_csv(df, paste0(path_root, path_data, path_tank,  '/clean/df_clean.csv', na = ""))
+
+```
+

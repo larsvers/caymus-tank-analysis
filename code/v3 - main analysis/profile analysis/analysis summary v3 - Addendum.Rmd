@@ -1,0 +1,586 @@
+---
+title: "Analysis summary v3 - Focus non-fermentation pulses"
+output: html_notebook
+---
+
+```{r include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+root_path <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+```
+
+
+# Functions
+
+```{r}
+
+graph_central_values <- function(df, var, var_name, rounding = 0, y = "Values") {
+  var_enquo = enquo(var)
+  
+  # Get the data range for normalised nudge_* values
+  vector <- df %>% pull(!!var_enquo)
+  dist <- range(vector)[2] - range(vector)[1]
+  nudge <- dist / 25
+  
+  # Get the data
+  data <- df %>% 
+    group_by(ferment_period) %>% 
+    summarise(
+      Average = mean(!!var_enquo),
+      Median = median(!!var_enquo),
+      Min = min(!!var_enquo),
+      Max = max(!!var_enquo),
+    )
+  
+  # Plot
+  p <- ggplot(data) +
+    geom_pointrange(aes(x = ferment_period, y = Median, ymin = Min, ymax = Max, colour = ferment_period), shape = 3) +
+    geom_point(aes(x = ferment_period, y = Average, colour = ferment_period), size = 3) +
+    geom_text(aes(x = ferment_period, y = Median, label = paste("Median: ", round(Median, digits = rounding))),
+              size = 3, hjust = "left", nudge_x = 0.05, colour = "#777777") +
+    geom_text(aes(x = ferment_period, y = Average, label = paste("Avg: ", round(Average, digits = rounding)), colour = ferment_period),
+              size = 3, hjust = "right", nudge_x = -0.05, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Min, label = round(Min, digits = rounding), 
+                  colour = ferment_period), size = 3, vjust = "top", nudge_y = -nudge, fontface = "bold") +
+    geom_text(aes(x = ferment_period, y = Max, label = round(Max, digits = rounding), 
+                  colour = ferment_period),size = 3, vjust = "bottom", nudge_y = nudge, fontface = "bold") +
+    labs(title = paste0(var_name, ": central values and range"),
+         subtitle = "Fermentation vs non-fermentation",
+         x = "", y = y) +
+    theme(legend.position="none")
+  
+    print(p)
+}
+
+```
+
+```{r}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+graph_series <- function(df, title = "Tank D1 series", plotly = TRUE) {
+
+  chart <- df %>% 
+    ggplot(aes(x = time)) +
+        # Specificaly set `label` to also show the non-scaled status.
+        geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+        geom_line(aes(y = setpoint, colour = "setpoint")) +
+        geom_line(aes(y = temp, colour = "temp")) +
+        scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+        scale_y_continuous(
+          name = "Temperatures",
+          sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status"),
+          limits = c(0, 150)
+        ) +
+        scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month") +
+        labs(title = title, x = "Time")
+    
+  # Show chart
+  if (plotly) {
+    plotly_chart <- ggplotly(chart) %>% 
+      layout(title = title)
+    
+    print(plotly_chart)
+  } else {
+    print(chart)
+  }
+    
+}
+
+```
+
+```{r}
+
+graph_scatter <- function(df, x, y, title = "title", x_lab = "x", y_lab = "y") {
+
+  x_enquo <- enquo(x)
+  y_enquo <- enquo(y)
+
+  p <- ggplot(data = df, aes(x = !!x_enquo, y = !!y_enquo, label = pulse_group)) +
+    geom_point(aes(colour = ferment_period)) +
+    geom_smooth(method = "loess") +
+    facet_wrap(~ ferment_period, scales = "free_x") +
+    labs(title = title, x = x_lab, y = y_lab) +
+    theme(legend.position = "none")
+
+  ggplotly(p, width = 800)  
+}
+
+```
+
+```{r}
+
+# Read main data
+df <- read_csv(paste0(root_path, "/data/v3/pulse/df-pulse.csv"), col_types = cols(pulse = "c", pulse_group = "c"))
+
+# Set status labels
+df <- df %>% 
+  mutate(status_label = case_when(
+    status == 0 ~ "0 - error",
+    status == 1 ~ "1 - off",
+    status == 2 ~ "2 - on (not cooling)",
+    status == 3 ~ "3 - on (cooling)",
+    status == 10 ~ "10 - low temp alarm (not cooling)",
+    status == 11 ~ "11 - low low temp alarm (not cooling)",
+    status == 12 ~ "12 - high temp alarm (cooling)",
+    status == 13 ~ "13 - high high temp alarm (cooling)",
+    status == 14 ~ "14 - low temp alarm (not cooling)",
+    status == 15 ~ "15 - low low temp alarm (not cooling)",
+    status == 16 ~ "16 - high temp alarm (cooling)",
+    status == 17 ~ "17 - high high temp alarm (cooling)",
+  ))
+
+# Set fermentation periods
+df <- df %>% 
+  mutate(ferment = case_when(
+    time >= ymd_hms("2021-09-16 19:44:16") & time <= ymd_hms("2021-09-23 12:10:51") ~ "Sep-09",
+    time >= ymd_hms("2021-10-04 18:22:17") & time <= ymd_hms("2021-10-10 00:55:03") ~ "Oct-04",
+    time >= ymd_hms("2021-10-19 08:07:31") & time <= ymd_hms("2021-10-26 18:36:02") ~ "Oct-19",
+    TRUE ~ "no-ferment"
+  )) %>% 
+  mutate(
+    ferment_bool = ifelse(ferment == "no-ferment", FALSE, TRUE),
+    ferment_period = ifelse(ferment == "no-ferment", "No Fermentation", "Fermentation"),
+  )
+
+```
+
+
+# The event data
+
+Here's the full dataset as a time-series showing <span style="color:darkorange">temperature</span>, <span style="color:steelblue">setpoint</span> and  <span style="color:#777">status</span>. 
+
+We also mark the three fermentation periods:
+
+1. Fermentation 1 from 2021-09-16 19:44:16 to 2021-09-23 12:10:51
+2. Fermentation 2 from 2021-10-04 18:22:17 to 2021-10-10 00:55:03
+3. Fermentation 3 from 2021-10-19 08:07:31 to 2021-10-26 18:36:02
+
+```{r eval=FALSE}
+
+# Build the scales to show `status` in the same graph as the temps
+# (to_scale_max - to_scale_min) * (value - value_min) / (value_max)
+linear_scale <- function(x) {
+  ((17-1)*(x-0)/(130-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((130-0)*(x-1)/(17-1)) + 0
+}
+
+chart_full_year <- ggplot(df, aes(x = time)) +
+  # Set fermentation periods.
+   annotate(geom = "rect", xmin = ymd_hms("2021-09-16 19:44:16"), xmax = ymd_hms("2021-09-23 12:10:51"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+   annotate(geom = "rect", xmin = ymd_hms("2021-10-04 18:22:17"), xmax = ymd_hms("2021-10-10 00:55:03"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+   annotate(geom = "rect", xmin = ymd_hms("2021-10-19 08:07:31"), xmax = ymd_hms("2021-10-26 18:36:02"), ymin = 0, ymax = 150,
+            fill = "tomato", size = 0, alpha = 0.15) +
+
+  # Specificaly set `label` to also show the non-scaled status.
+  geom_line(aes(y = invert_scale(status), colour = "status", label = status), size = 0.25) +
+  geom_line(aes(y = setpoint, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "status"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "Status"),
+    limits = c(0, 150)
+  ) +
+  scale_x_datetime(date_labels="%b %y", date_breaks  = "1 month") +
+  labs(title = "Tank D1 temperature, status and setpoint developments 2021",
+       subtitle = "Red areas indicate fermentation periods",
+       x = "Time")
+
+# Show chart
+# ggplotly(chart_full_year, width = 800) %>% 
+ggplotly(chart_full_year) %>%
+  layout(title = list(text = paste0('Tank D1 temperature, status and setpoint developments 2021',
+                                    '<br>',
+                                    '<sup>',
+                                    'Red areas indicate fermentation periods',
+                                    '</sup>')))
+
+```
+
+## Impact of duration on temperature change
+
+```{r eval=FALSE}
+
+df_pulse %>% 
+  graph_scatter(pulse_duration, temp_diff, 
+                "Impact of Pulse Duration on Temperature Change", "Pulse Duration in Minutes", "Temperature Difference in °F")
+
+```
+
+Check the positive fermentation pulse periods and if they are wildly off.
+
+```{r eval=FALSE}
+temp_diff_pos <- df_pulse %>% 
+  filter(ferment_bool, temp_diff > 0) %>% 
+  pull(pulse_group)
+
+
+for (value in temp_diff_pos) {
+  df %>% 
+    filter(pulse_group == value) %>% 
+    graph_series(paste("Pulse group", value), plotly = FALSE)
+}
+
+```
+
+They are not.
+
+General outcome: find sweet spot (between ~35 and ~80 minutes)
+
+### Deeper temp change/duration analysis
+
+One of the suggested actions is to reduce non-fermentation pulses. Either increase the setpoint dead band or just stop them entirely.
+
+In order to do so, we'll focus on non-fermentation pulses a little - especially the outliers:
+
+```{r}
+
+df_pulse %>% 
+  filter(!ferment_bool) %>% 
+  ggplot() +
+    geom_hline(yintercept = 0, alpha = 0.5) +
+    geom_point(aes(x = pulse_duration, y = temp_diff))
+
+```
+
+
+Actions:
+
+1. Identify non-pulses (super short pulses, maybe less than 8-10 pulses) during non-fermentation
+
+```{r}
+
+t <- df_pulse %>% 
+  filter(!ferment_bool, pulse_number < 10) %>% 
+  pull(pulse_group)
+
+df %>% 
+  filter(pulse_group %in% t) %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = status)) +
+    facet_wrap(~pulse_group, scales = "free_x")
+
+```
+
+2. Remove them for the analysis
+
+Now we have a tighter picture:
+
+```{r}
+
+df_pulse %>% 
+  filter(!ferment_bool) %>% 
+  mutate(short_periods = ifelse(pulse_number >= 10, "10 pulses +", "less than 10 pulses")) %>% 
+  ggplot() +
+    geom_hline(yintercept = 0, alpha = 0.5) +
+    geom_point(aes(x = pulse_duration, y = temp_diff, col = short_periods)) +
+    scale_color_manual(values = c("grey", "tomato")) +
+    theme(legend.title = element_blank()) +
+    labs(
+      title = "Pulse duration v Temperature change",
+      subtitle = "Remove pulse periods with less than 10 pulses",
+      x = "Pulse duration",
+      y = "Temperature change in °F"
+    )
+
+```
+
+
+3. Segment
+
+Segmentation based to capture and exclude the bulk of non-fermentation pulse periods between 0 and 130 minutes and between 0.5 and -0.75 temperature change values. The upper bound is chosen stricter as positive results are sub-otimal and not expected.
+
+```{r}
+
+p <- df_pulse %>% 
+  filter(!ferment_bool, pulse_number >= 10) %>% 
+  ggplot(aes(label = pulse_group)) +
+    geom_point(aes(x = pulse_duration, y = temp_diff)) +
+    geom_hline(yintercept = 0.5, alpha = 0.5) +
+    geom_hline(yintercept = -0.75, alpha = 0.5) +
+    geom_vline(xintercept = 130, alpha = 0.5)
+
+p
+
+ggplotly(p)
+
+```
+
+4 Analyse
+
+The analysis will focus on the positive non-normal outlers and the negative non-normal outliers below 130 minutes
+
+
+```{r}
+
+df_pulse %>% 
+  filter(!ferment_bool, pulse_number >= 10) %>% 
+  ggplot(aes(label = pulse_group)) +
+    annotate("rect", ymin = 0.5, ymax = Inf, xmin = -Inf, xmax = 130, fill= "tomato", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = -0.75, xmin = -Inf, xmax = 130, fill= "lightskyblue", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = +Inf, xmin = 130, xmax = +Inf, fill= "aquamarine", alpha = 0.2) +
+    geom_vline(xintercept = 130, alpha = 0.5) +
+    geom_segment(aes(x = -Inf, xend = 130, y = 0.5, yend = 0.5), alpha = 0.5, size = 0.2) +
+    geom_segment(aes(x = -Inf, xend = 130, y = -0.75, yend = -0.75), alpha = 0.5, size = 0.2) +
+    geom_point(aes(x = pulse_duration, y = temp_diff)) +
+    annotate("rect", ymin = -0.74, ymax = 0.49, xmin = -Inf, xmax = 128, fill= "#eeeeee", alpha = 0.8) +
+    labs(
+      title = "Pulse duration v Temperature change",
+      subtitle = "Segmentation",
+      x = "Pulse duration",
+      y = "Temperature change in °F"
+    )
+
+```
+6. Analysing upper left segment (positive temp change for pulses < 130 min's)
+
+5 pulse periods happen on the 2nd and the 3rd:
+
+```{r}
+df_pulse %>% 
+  filter(pulse_number >= 10, !ferment_bool, temp_diff > 0.5) %>% 
+  pull(pulse_group)
+```
+
+
+
+```{r}
+p <- df_pulse %>% 
+  mutate(maybe_ferment = ifelse(time >= ymd("2021-11-02") & time < ymd("2021-11-04"), "Fermentation?", "No Fermentation")) %>% 
+  filter(!ferment_bool, pulse_number >= 10) %>% 
+  ggplot(aes(label = pulse_group)) +
+    geom_point(aes(x = pulse_duration, y = temp_diff, col = maybe_ferment)) +
+    geom_hline(yintercept = 0.5) +
+    geom_hline(yintercept = -0.5) +
+    geom_vline(xintercept = 130) +
+    scale_colour_manual(values = c("tomato", "grey")) +
+    theme(legend.title = element_blank()) +
+    labs(
+      title = "Duration v Temp change",
+      subtitle = "Focus on potential November fermentation",
+      x = "Pulse duration",
+      y = "Temperature change in °F"
+    )
+
+p
+
+ggplotly(p)
+
+```
+
+```{r}
+df_pulse %>% 
+  mutate(maybe_ferment = ifelse(time >= ymd("2021-11-02") & time < ymd("2021-11-04"), "Fermentation?", "No Fermentation")) %>% 
+  filter(!ferment_bool, pulse_number >= 10, maybe_ferment == "No Fermentation") %>% 
+  ggplot(aes(label = pulse_group)) +
+    annotate("rect", ymin = 0.5, ymax = Inf, xmin = -Inf, xmax = 130, fill= "tomato", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = -0.75, xmin = -Inf, xmax = 130, fill= "lightskyblue", alpha = 0.2) +
+    annotate("rect", ymin = -Inf, ymax = +Inf, xmin = 130, xmax = +Inf, fill= "aquamarine", alpha = 0.2) +
+    geom_vline(xintercept = 130, alpha = 0.5) +
+    geom_segment(aes(x = -Inf, xend = 130, y = 0.5, yend = 0.5), alpha = 0.5, size = 0.2) +
+    geom_segment(aes(x = -Inf, xend = 130, y = -0.75, yend = -0.75), alpha = 0.5, size = 0.2) +
+    geom_point(aes(x = pulse_duration, y = temp_diff)) +
+    annotate("rect", ymin = -0.74, ymax = 0.49, xmin = -Inf, xmax = 128, fill= "#eeeeee", alpha = 0.8) +
+    labs(
+      title = "Pulse duration v Temperature change",
+      subtitle = "Segmentation",
+      x = "Pulse duration",
+      y = "Temperature change in °F"
+    )
+
+
+```
+
+
+Note, the pattern of the wider time period this pulse period sits in seems to be a modest fermentation? See below:
+
+```{r}
+
+df %>% 
+  filter(time >= ymd("2021-11-01"), time < ymd("2021-11-04")) %>% 
+  graph_series()
+
+```
+
+Looking at all pulses individually
+
+```{r}
+
+(t <- df_pulse %>% 
+  filter(!ferment_bool, pulse_number >= 10, pulse_duration < 130, temp_diff > 0.5) %>% 
+  pull(pulse_group))
+
+for (value in t) {
+  df %>% 
+    filter(pulse_group == value) %>% 
+    graph_series(paste("Pulse group", value), plotly = TRUE)
+}
+
+```
+**16/12/2021 10:22 (to 10:38)**: the first event (a very short cooling pulse) results in a small temperature rise from 54.51 to 55.56, which successfully gets reduced to 55.23 by the end of the pulse period. So strictly speaking only a single short cooling pulse is not working, while the other 20 modulations function.
+
+```{r}
+df_pulse %>% 
+  filter(pulse_group == "16/12/2021 10:22") %>% 
+  select(pulse_group, temp_diff, pulse_duration, roc, pulse_number)
+```
+
+
+**03/11/2021 16:09**: short pulse of 17 minutes - ending in a constant cooling period. 
+
+**03/11/2021 12:07**: short pulse of 10 minutes with under 15 pulse - ending in a constant cooling period. 
+
+**03/11/2021 8:39 (to 8:49)**: short pulse of 10 minutes with 13 pulses again - ending in a constant cooling period. 
+
+```{r}
+
+df %>% 
+  filter(time >= ymd_h("2021-11-03 8"), time < ymd_h("2021-11-03 9")) %>% 
+  graph_series()
+
+```
+
+Question: what are the exact mechanics controlling if pulse cooling continues or constant cooling kicks in?
+
+**02/11/2021 14:11 (to 16:11)**: (the largest non-fermentation temp change) the system detects a temperature jump despite of pulse cooling and reacts with a period of constant cooling (which brings down the temperature successfully over the course of ~2 hours).
+
+```{r}
+
+df %>% 
+  filter(time >= ymd_h("2021-11-02 13"), time < ymd_h("2021-11-02 19")) %>% 
+  graph_series()
+
+```
+
+
+
+**09/06/2021 18:59 (to 20:53)**: pulse period keeps temp steady at 55.37 up to 19:53 when the temp rises to 55.98 and remains stable to the period end. To me it seems there's an unaccounted driver.
+
+**10/09/2021 10:10 (to 10:20)**: short pulse of around 10 minutes with only 14 pulses. 
+
+```{r}
+
+df_pulse %>% 
+  filter(pulse_group == "10/09/2021 10:10")
+
+```
+
+Checking this one in its temporal context shows that the system seems to have detected that pulsing won't cut it as the pulse is followed by constant cooling:
+
+```{r}
+
+df %>% 
+  filter(time >= ymd_h("2021-09-10 9"), time < ymd_h("2021-09-10 16")) %>% 
+  graph_series()
+
+```
+
+Action: pulse periods followed by constant cooling should potentially be flagged as such / constitute their own category
+
+7. Analyse lower left segment (positive temp change for pulses < 130 min's and lower more than -1 temp change)
+
+```{r}
+
+(t <- df_pulse %>% 
+ mutate(maybe_ferment = ifelse(time >= ymd("2021-11-02") & time < ymd("2021-11-04"), "Fermentation?", "No Fermentation")) %>% 
+  filter(!ferment_bool, maybe_ferment == "No Fermentation", pulse_number >= 10, pulse_duration < 130, temp_diff < -0.75) %>% 
+  pull(pulse_group))
+
+for (value in t) {
+  df %>% 
+    filter(pulse_group == value) %>% 
+    graph_series(paste("Pulse group", value), plotly = TRUE)
+}
+
+```
+
+25.2: just coming out from an empty tank - easy pray
+9.6: shorter pulse after pulse plus constant cooling period that probably paved the way for (over)successful cooling
+21.6: very large drop during the morning which it seems can't be fully attributed to the pulse cooling but should be largely due to unaccounted factors
+10.9: Happens during a very active phase a few days before fermentation and close to a few temperature events that seem to be triggered by unaccounted factors (see bump at ~8pm)
+2.10: follows empty tank scenario after a day of constant cooling - again, seems to be easy pray
+2.12: seems to happen just before (or during) an empty tank scenario - or at least some unaccounted activity
+
+```{r}
+
+df %>% filter(time >= ymd_h("2021-02-20 19"), time < ymd_h("2021-02-25 23")) %>% graph_series("Feb 25")
+df %>% filter(time >= ymd_h("2021-06-09 10"), time < ymd_h("2021-06-10 23")) %>% graph_series("Jun 9")
+df %>% filter(time >= ymd_h("2021-06-17 12"), time < ymd_h("2021-06-21 23")) %>% graph_series("Jun 21")
+df %>% filter(time >= ymd_h("2021-09-10 5"), time < ymd_h("2021-09-11 12")) %>% graph_series("Sep 10")
+df %>% filter(time >= ymd_h("2021-10-02 0"), time < ymd_h("2021-10-04 12")) %>% graph_series("Oct 2")
+df %>% filter(time >= ymd_h("2021-12-01 12"), time < ymd_h("2021-12-04 12")) %>% graph_series("Dec 2")
+
+```
+
+
+8. Analysis of long space
+
+```{r}
+
+(t <- df_pulse %>% 
+ mutate(maybe_ferment = ifelse(time >= ymd("2021-11-02") & time < ymd("2021-11-04"), "Fermentation?", "No Fermentation")) %>% 
+  filter(!ferment_bool, maybe_ferment == "No Fermentation", pulse_number >= 10, pulse_duration > 130) %>% 
+  pull(pulse_group))
+
+for (value in t) {
+  df %>% 
+    filter(pulse_group == value) %>% 
+    graph_series(paste("Pulse group", value), plotly = TRUE)
+}
+
+```
+
+```{r}
+
+df_pulse %>% filter(pulse_group == t[1] | pulse_group == t[2])
+df %>% filter(time >= ymd_h("2021-03-17 0"), time < ymd_h("2021-03-18 23")) %>% graph_series("Mar 17 and 18")
+
+df_pulse %>% filter(pulse_group == t[3])
+df %>% filter(time >= ymd_h("2021-03-26 0"), time < ymd_h("2021-03-26 23")) %>% graph_series("Mar 26")
+
+df_pulse %>% filter(pulse_group == t[4])
+df %>% filter(time >= ymd_h("2021-04-05 0"), time < ymd_h("2021-04-05 23")) %>% graph_series("Apr 5")
+
+df_pulse %>% filter(pulse_group == t[5])
+df %>% filter(time >= ymd_h("2021-04-19 0"), time < ymd_h("2021-04-19 23")) %>% graph_series("Apr 19")
+
+df_pulse %>% filter(pulse_group == t[6])
+df %>% filter(time >= ymd_h("2021-04-23 0"), time < ymd_h("2021-04-23 23")) %>% graph_series("Apr 23")
+
+df_pulse %>% filter(pulse_group == t[7] | pulse_group == t[8])
+df %>% filter(time >= ymd_h("2021-04-29 0"), time < ymd_h("2021-04-30 23")) %>% graph_series("Apr 29 and 30")
+
+df_pulse %>% filter(pulse_group == t[9] | pulse_group == t[10])
+df %>% filter(time >= ymd_h("2021-05-13 0"), time < ymd_h("2021-05-14 23")) %>% graph_series("May 13 and 14")
+
+df_pulse %>% filter(pulse_group == t[11])
+df %>% filter(time >= ymd_h("2021-07-01 0"), time < ymd_h("2021-07-02 23")) %>% graph_series("Jul 1")
+
+df_pulse %>% filter(pulse_group == t[12])
+df %>% filter(time >= ymd_h("2021-09-09 0"), time < ymd_h("2021-09-09 23")) %>% graph_series("Sep 9")
+
+df_pulse %>% filter(pulse_group == t[13] | pulse_group == t[14])
+df %>% filter(time >= ymd_h("2021-12-15 0"), time < ymd_h("2021-12-16 23")) %>% graph_series("Dec 15")
+
+```
+

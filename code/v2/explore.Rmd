@@ -1,0 +1,87 @@
+---
+title: "Explore v2"
+output: html_notebook
+---
+
+This file is exploring the data loaded and prepped in `code/v2/load.Rmd`
+
+```{r libs, echo=FALSE}
+library(tidyverse)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+```
+
+# Visualise
+
+Let's look at the data:
+
+```{r vis-initial}
+
+df
+
+(p1 <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  geom_line(aes(y = sp, colour = "sp")) +
+  scale_colour_manual("", breaks = c("temp", "sp"), values = c("grey", "pink")) +
+  labs(y = "temp and setpoint"))
+
+(p2 <- ggplot(data = df_temp, aes(x = time)) +
+  geom_line(aes(y = state, colour = "state")) +
+  scale_colour_manual("", breaks = c("state"), values = c("orange")))
+
+gridExtra::grid.arrange(p1, p2, nrow = 2)
+
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+
+```
+
+Let's visualise them all in one visual
+
+```{r}
+
+linear_scale <- function(x) {
+  ((3-1)*(x-0)/(100-0)) + 1
+}
+
+invert_scale <- function(x) {
+  ((100-0)*(x-1)/(3-1)) + 0
+}
+
+(p <- ggplot(df, aes(x = time)) +
+  geom_line(aes(y = invert_scale(state), colour = "state"), size = 0.25) +
+  geom_line(aes(y = sp, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "state"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "State")
+  ))
+
+plotly::ggplotly(p)
+
+```
+
+Check individual months
+
+```{r}
+makeChart <- function(mth) {
+p <- ggplot(df %>% filter(month == mth), aes(x = time)) +
+  geom_line(aes(y = invert_scale(state), colour = "state"), size = 0.25) +
+  geom_line(aes(y = sp, colour = "setpoint")) +
+  geom_line(aes(y = temp, colour = "temp")) +
+  scale_colour_manual("", breaks = c("temp", "setpoint", "state"), values = c("orange", "lightskyblue", "grey")) +
+  scale_y_continuous(
+    name = "Temperatures",
+    sec.axis = sec_axis(trans = ~linear_scale(.), name = "State")
+  ) +
+  labs(title = mth)
+  
+print(p)
+plotly::ggplotly(p)
+
+}
+
+makeChart("Nov")
+```

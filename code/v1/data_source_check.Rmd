@@ -1,0 +1,195 @@
+---
+title: "Data source check June"
+output: html_notebook
+html_notebook:
+    code_folding: hide
+---
+
+As part of an analysis of the association betwen temperature (`temp`), setpoint (`sp`) and state (`state`) data we've extracted the same data from 3 sources, which differed in setpoint as well as state data. 
+
+We're now trying to understand which source is accurate.
+
+This document highlights the differences between the datasets, solely looking at June 2021 data for tank D1.
+
+## The three data sources
+
+The variables  `temp`, `sp` and `state` are being produced from the three datasets
+
+- **Extraction 1** (15 minute data - extracted from ignition before Jan 11)
+- **Extraction 2** (1-2 hour data - extracted from ignition, via the interface on Jan 20)
+- **Raw Signal** data from the database
+
+We're only looking at the time between _Jun 8 to Jun 28_.
+
+All data sources (plus the raw signal data for `sp` and `state` for the full year) can be found in the file `june-compare.xslx`, but here are the datasets in the order listed above for reference:
+
+```{r}
+
+(extr_01 <- readxl::read_xlsx("../data/june compare/june-compare.xlsx", sheet = "Extracted 1"))
+(extr_02 <- readxl::read_xlsx("../data/june compare/june-compare.xlsx", sheet = "Extracted 2"))
+(updt_raw <- readxl::read_xlsx("../data/june compare/june-compare.xlsx", sheet = "Raw signal"))
+
+```
+
+
+Note, that the extraction process produced interpolated figures for `sp` and `state`. In detail:
+ 
+- **Extracted 1** includes interpolation for `sp` and `state`
+- **Extracted 2** includes interpolation for `sp` only
+- The **Raw Signal data** does not include any interpolation for neither `sp` nor `state`.
+
+**The key question is which `sp` and `state` values are accurate?**
+
+The following is a comparison of all values for the  June data:
+
+## Temp check:
+
+Result: all 3 datasets produce the same result. _Extracted 2_ looks different as it has a lower resolution (not quarter hourly data but 1-2 hour slots).
+
+
+```{r}
+
+# Visual
+# extr_01 %>% ggplot() + geom_line(aes(x = t_stamp, y = eng))
+# extr_02 %>% ggplot() + geom_line(aes(x = t_stamp, y = temp))
+# updt_raw %>% ggplot() + geom_line(aes(x = t_stamp, y = temp))
+
+# Data
+check_tmp <- extr_01 %>% 
+  select(t_stamp, temp_01 = temp) %>% 
+  left_join(updt_raw %>% 
+              select(t_stamp, temp_raw = temp), 
+            by = "t_stamp")
+
+# Check correlation
+# cor(check_tmp %>% select(-1))
+
+# Composed visual.
+p1 <- check_tmp %>% ggplot(aes(x = t_stamp)) +
+  geom_line(aes(y = temp_01, colour = "Extracted 1")) +
+  geom_line(aes(y = temp_raw, colour = "Raw signal")) +
+  scale_colour_manual("", breaks = c("Extracted 1", "Raw signal"), values = c("orange", "skyblue")) +
+  labs(title = "Extracted 1 and Raw signal")
+
+p2 <- extr_02 %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = temp)) +
+  labs(title = "Extracted 2")
+
+plotly::ggplotly(p1, width = 800)
+plotly::ggplotly(p2, width = 675)
+
+```
+
+## `sp` == setpoint data check:
+
+Result: there's a discrepancy of 6.5 hours between the **Extracted 1** and the **Raw Signal** data.
+
+```{r}
+
+# Visual
+# extr_01 %>% ggplot() + geom_line(aes(x = t_stamp, y = sp))
+# extr_02 %>% ggplot() + geom_line(aes(x = t_stamp, y = sp))
+# extr_02 %>% ggplot() + geom_line(aes(x = t_stamp, y = sp_extracted))
+# updt_raw %>% ggplot() + geom_line(aes(x = t_stamp, y = sp_final))
+
+# Data
+(check_tmp <- extr_01 %>% 
+  select(t_stamp, sp_01 = sp) %>% 
+  left_join(updt_raw %>% 
+              select(t_stamp, sp_raw = sp), 
+            by = "t_stamp"))
+
+# Check correlation
+# cor(check_tmp %>% select(-1))
+
+# Composed visual.
+p1 <- check_tmp %>% ggplot(aes(x = t_stamp)) +
+  geom_line(aes(y = sp_01, colour = "Extracted 1")) +
+  geom_line(aes(y = sp_raw, colour = "Raw signal")) +
+  scale_colour_manual("", breaks = c("Extracted 1", "Raw signal"), values = c("orange", "skyblue")) +
+  labs(title = "Extracted 1 and Raw signal")
+
+plotly::ggplotly(p1, width = 800)
+
+p2 <- extr_02 %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = sp)) +
+  labs(title = "Extracted 2")
+
+plotly::ggplotly(p2, width = 675)
+
+```
+
+## `state` check:
+
+Result: 
+
+- On Feb 17 there's a discrepancy of 7:15 hours between the **Extracted 1** and the **Raw Signal** data.
+- On Feb 26 there's a discrepancy of 7:00 hours between the **Extracted 1** and the **Raw Signal** data.
+- The **Extracted 2** data has an extra step from 1 to 2 on Feb 19
+- The **Extracted 2** data's steps happen a few days after the other two datasets.
+
+```{r}
+
+# Visual
+extr_01 %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = state)) + 
+  labs(title = "Extracted 1") + 
+  scale_y_continuous(limits = c(1,3))
+
+extr_02 %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = state)) + 
+  labs(title = "Extracted 2") + 
+  scale_y_continuous(limits = c(1,3))
+
+updt_raw %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = state)) + 
+  labs(title = "Raw signal") + 
+  scale_y_continuous(limits = c(1,3))
+
+# Data
+(check_tmp <- extr_01 %>% 
+  select(t_stamp, state_01 = state) %>% 
+  left_join(updt_raw %>% 
+              select(t_stamp, state_raw = state), 
+            by = "t_stamp"))
+
+# Check correlation
+# cor(check_tmp %>% select(-1))
+
+# Composed visual.
+p1 <- check_tmp %>% ggplot(aes(x = t_stamp)) +
+  geom_line(aes(y = state_01, colour = "Extracted 1")) +
+  geom_line(aes(y = state_raw, colour = "Raw signal")) +
+  scale_colour_manual("", breaks = c("Extracted 1", "Raw signal"), values = c("orange", "skyblue")) +
+  labs(title = "Extracted 1 and Raw signal")
+
+plotly::ggplotly(p1, width = 800)
+
+p2 <- extr_02 %>% ggplot() + 
+  geom_line(aes(x = t_stamp, y = state)) +
+  labs(title = "Extracted 2")
+
+plotly::ggplotly(p2, width = 675)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
