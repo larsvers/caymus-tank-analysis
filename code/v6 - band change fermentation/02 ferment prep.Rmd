@@ -21,7 +21,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/C1"
+path_tank <- "/D1"
 ```
 
 # Load required data
@@ -287,20 +287,15 @@ Sometimes that's a bit too early, sometimes it's too late. We can conceive a mor
 
 #### Detect fermentation start and end points (points 2, 4) | automatic
 
-For each fermentation period calculate the LOESS smoothed brixed curve and the smooth brix curve's gradient. We'll use the smooth brix' gradient to detect points 2 (curve start), 3 (curve inflection) and 4 (curve end).
+For each fermentation period calculate the LOESS smoothed brix curve, the smooth brix curve's slope (1st derivative) and the smoth brix curve's accelration (2nd derivative). 
+
+We'll use the slope and accelration to detect points 2 (curve start), just the slope to detect point 3 (curve inflection) and 4 (curve end).
 
 We do so by using tidyr's nesting on`df_brix` which creates list-columns for each fermentation_period in order for loess and gradient to run on each nested period data.
 
 Note, we're using r's base loess function with a span we set to **0.15**. 0.25 worked well on D1 but botched a fermentation on C1 which needed a tighter curve. 
 
 We're NOT using STL decomposition with a loess trend as this is just much simpler :))
-
-ADD:
-
-And we calculate the brix' 2nd derivative, which we use to help build point 2. Point 2 is the start of the fermentation which is conditioned by:
-
-1. The brix curve needs tobe falling (1st derivative < 0)
-2. The brix curve's fall needs to be accelerating (our eyes need to slide across a bump) (2nd derivative < 0)
 
 ```{r}
 
@@ -359,7 +354,7 @@ Check visually:
 
 ```{r eval=FALSE}
 
-# Check brix_smooth and brix_deriv_1 make sense.
+# Check brix_smooth, brix_deriv_1 and brix_deriv_2 make sense.
 df_brix_smooth %>% 
   filter(ferment_bool) %>% 
   # filter(ferment_period == '22-Sep-12') %>% # CHANGED
@@ -386,6 +381,13 @@ df_brix_smooth %>%
 ```
 
 Add points 2 and 4, the start of phase 2 and the start of phase 3 next. Note, that there can be fermentation curves that skip phase 1 altogether and start with phase 2 straight away. Simple reason being, the smooth brix curve gradient is negative from the start.
+
+Point 2 conditons - curve start, brix falls off:
+
+1. The brix curve needs to be falling (1st derivative / slope < 0)
+2. The brix curve's fall needs to be accelerating (2nd derivative / acceleration < 0)
+
+Point 4 condition - curve inflection, brix slope increaes: brix must be below 0
 
 ```{r}
 
@@ -419,6 +421,10 @@ df_brix_smooth <- df_brix_smooth %>%
 ```
 
 #### Detect cell division inflection point
+
+Condition: find the minimum after slope (1st derivative) for each fermentation period.
+
+Note: this requires all history and needs to be re-written for real time detections!
 
 ```{r}
 

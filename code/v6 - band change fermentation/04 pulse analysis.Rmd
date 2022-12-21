@@ -17,7 +17,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/D1"
+path_tank <- "/C1"
 ```
 
 
@@ -266,7 +266,7 @@ point_4s <- df_ferment_pulse %>%
     ylim(-25, NA) +
     facet_wrap(~ferment_period, scales = "free_x"))
 
-# Get a tempearture chart
+# Get a temperature chart
 (p2 <- df_ferment_pulse %>% 
   filter(ferment_bool) %>% 
   mutate(pulse_value = ifelse(!is.na(pulse), 40, NA_real_)) %>%

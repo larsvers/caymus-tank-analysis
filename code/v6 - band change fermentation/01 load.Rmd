@@ -7,11 +7,7 @@ Analysis v6 is primarily (and initially) concerned with an analysis of any poten
 
 This notebook is loading the 6th version of the data which should cover Jan 21 to Sep 22 data. It is build on and adapts v3's `load.Rmd`.
 
-MANUAL CHANGES BEFORE LOAD:
-
-- Remove last row if it shows the timestamp of the data extraction (this should be worked into the process)
-
-
+TODO: Continue with E1
 ```{r libs, include=FALSE}
 library(tidyverse)
 library(ggplot2)
@@ -21,7 +17,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/C1"
+path_tank <- "/E1"
 ```
 
 # Check a single month (only for initial testing)
@@ -76,6 +72,34 @@ jun_orig %>%
 
 # All files
 
+Helper function to remove odd month (when Caymus export the data per month, a row with the values of the exported variables at that very moment gets added to the data - which we're stripping here):
+
+```{r}
+
+strip_odd_month <- function(df) {
+  # Find odd month.
+  to_strip <- df %>% 
+    mutate(month = lubridate::month(t_stamp)) %>% 
+    group_by(month) %>% 
+    count() %>% 
+    filter(n == 1) %>% 
+    pull(month)
+  
+  # Return df if no month is odd.
+  if (length(to_strip) == 0) return(df)
+  
+  # Filter the odd month out and return.
+  result <- df %>% 
+    mutate(month = lubridate::month(t_stamp)) %>% 
+    filter(month != to_strip) %>% 
+    select(-month)
+  
+  return(result)
+}
+
+```
+
+
 Load all files and check if their column names are all the same:
 
 ```{r laod-all}
@@ -91,11 +115,13 @@ file_paths <- sapply(files_clean, function(file) { paste0(path_root, path_data, 
 
 # Read in all files.
 df_list <- lapply(file_paths, function (x) { readxl::read_xlsx(x) })
+df_list_clean <- lapply(df_list, strip_odd_month)
+
 
 # Check if all files columns are the same and in the same order
-name_vector <- names(df_list[[1]])
+name_vector <- names(df_list_clean[[1]])
 
-lapply(df_list, function(x) { all(name_vector == names(x)) }) %>% 
+lapply(df_list_clean, function(x) { all(name_vector == names(x)) }) %>% 
   unlist() %>% 
   all()
 
@@ -346,7 +372,6 @@ df <- df %>% select(where(~sum(!is.na(.x)) > 0))
 
 ```
 
-
 # Deal with duplicates
 
 Let's check if there are any full duplicates - across all variables:
@@ -472,7 +497,13 @@ Makes sense at first glance. D1 had 4 fermentation in 21 and 4 in 22!
 
 ```{r}
 
-write_csv(df, paste0(path_root, path_data, path_tank,  '/clean/df_clean.csv', na = ""))
+# Create `/clean` directory if it doesn't yet exist
+if(!dir.exists(paste0(path_root, path_data, path_tank, "/clean"))) {
+  dir.create(paste0(path_root, path_data, path_tank, "/clean"))
+}
+
+# Write
+write_csv(df, paste0(path_root, path_data, path_tank, '/clean/df_clean.csv', na = ""))
 
 ```
 
