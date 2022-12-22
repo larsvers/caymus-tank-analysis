@@ -21,7 +21,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/D1"
+path_tank <- "/E1"
 ```
 
 # Load required data
@@ -29,7 +29,12 @@ path_tank <- "/D1"
 ```{r}
 (df <- readr::read_csv(
   paste0(path_root, path_data, path_tank, '/clean/df_clean.csv'), 
-  col_types = cols(.default = "?", state = "i", mode_type = "i")))
+  col_types = cols(.default = "?", state = "i", abv = "d", mode_type = "i")))
+```
+```{r}
+
+df %>% summary
+
 ```
 
 # Identify and mark fermentation periods
@@ -126,6 +131,12 @@ df_brix <- df %>%
   
 ```
 
+### Defences
+
+Check and remove faux fermentation periods
+
+#### No curve
+
 Above algo detected a false positive fermentation period for tank C1 that lingered constantly at around 20 brix before falling off. 
 
 The following procedure defends against that case by:
@@ -154,7 +165,34 @@ df_brix <- df_brix %>%
 
 ```
 
-Check ferment periods visually:
+#### Too short 
+
+TODO: also defend against periods that are too short! (see E1 22 false positive)
+
+```{r}
+# Single out all ferment_periods that are shorter than 3 days
+short_periods <- df_brix %>% 
+  filter(ferment == "start" | ferment == "end") %>% 
+  group_by(ferment_period, ferment, time) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(period_in_days = (as.numeric(lag(time) - time)) / 60 / 24) %>% 
+  filter(period_in_days > 0, period_in_days < 3) %>% 
+  pull(ferment_period)
+
+# Remove them.
+df_brix <- df_brix %>% 
+  mutate(
+    ferment_bool = ifelse(ferment_period %in% short_periods, FALSE, ferment_bool),
+    ferment_period = ifelse(ferment_bool, ferment_period, NA_character_),
+    ferment = ifelse(ferment_bool, ferment, NA_character_),
+  ) 
+  
+```
+
+
+
+### Visual ferment period check:
 
 ```{r eval=FALSE}
 
@@ -422,7 +460,12 @@ df_brix_smooth <- df_brix_smooth %>%
 
 #### Detect cell division inflection point
 
-Condition: find the minimum after slope (1st derivative) for each fermentation period.
+Conditions: 
+1. for each fermentation period
+2. find the minimum slope of a decreasing brix curve (slope < 0)
+3. for a minimum brix value of 5
+
+Note, condition (3) was added with tank E1, which had sharp slope offs just before the fermentation end point. This led to the inflection point being close or equal to point 4 (end). The minimum value of 5 was chosen arbitrarily founded on other curves.
 
 Note: this requires all history and needs to be re-written for real time detections!
 
@@ -430,17 +473,16 @@ Note: this requires all history and needs to be re-written for real time detecti
 
 # Get the times for point (2)
 inflection_times <- df_brix_smooth %>% 
-  filter(ferment_bool, brix_deriv_1 < 0) %>% 
-  group_by(ferment_period) %>% 
-  fill(ferment_phase) %>% 
+  fill(ferment_phase) %>%
   filter(ferment_phase == 'Phase 2') %>% 
+  filter(ferment_bool, brix_deriv_1_smooth < 0, brix_smooth > 5) %>%
+  group_by(ferment_period) %>%
   slice_min(brix_deriv_1_smooth) %>% 
-  ungroup() %>% 
   pull(time)
 
 # Add them to the `ferment_phase` var.
-df_brix_smooth <- df_brix_smooth %>% 
-  mutate(ferment_point = if_else(time %in% inflection_times, "Point 3", ferment_point)) 
+df_brix_smooth <- df_brix_smooth %>%
+  mutate(ferment_point = if_else(time %in% inflection_times, "Point 3", ferment_point))
   # Note, that for now, inflection point is still part of phase 2
 
 ```

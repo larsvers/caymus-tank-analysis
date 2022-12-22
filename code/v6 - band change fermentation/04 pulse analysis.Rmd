@@ -17,7 +17,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/C1"
+path_tank <- "/E1"
 ```
 
 
@@ -185,14 +185,12 @@ graph_focus_bar <- function(data, x, title = "Yay", x_label = "x", y_label = "")
 ```{r}
 
 # Read in pulse data
-df_pulse <- read_csv(paste0(path_root, path_data, path_tank, "/clean/df_pulse_periods.csv"), col_types = cols(pulse_group = "c"))
-df_pulse
+(df_pulse <- read_csv(paste0(path_root, path_data, path_tank, "/clean/df_pulse_periods.csv"), col_types = cols(pulse_group = "c")))
 
-```
-
-```{r}
 df_pulse %>% summary()
+
 ```
+
 
 Focus in on the 21 and the 22 fermentations ONLY PHASE 2 and run analysis only for those two
 
@@ -216,6 +214,7 @@ First we need to get the full dataset in:
   paste0(path_root, path_data, path_tank, '/clean/df_clean_ferment_pulse.csv'), 
   col_types = cols(
     .default = "?", 
+    abv = "d",
     state = "i",
     mode_type = "i",
     pulse = "c",
@@ -286,16 +285,12 @@ plotly::ggplotly(p2)
 
 ```
 
-Some conclusions:
-
-- Disregarding the unusually short 21-Nov-02 fermentation it seems 22 fermentations need a little less fermentation
-
-TODO: Add more here
-
 # Compare key values
 
 ```{r}
+
 skimr::skim(df_focus)
+
 ```
 
 ## Number of pulses per day
@@ -379,8 +374,6 @@ ratio_22 <- df_pulses_per_day %>% filter(year == "22") %>% pull(ratio)
 t.test(ratio_21, ratio_22, paired = TRUE, var.equal = TRUE)
 
 ```
-
-There's no significant difference between the two means.
 
 ## Density comparison
 

@@ -17,7 +17,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/C1"
+path_tank <- "/E1"
 ```
 
 # Load required data
@@ -27,6 +27,7 @@ path_tank <- "/C1"
   paste0(path_root, path_data, path_tank, '/clean/df_clean_ferment.csv'), 
   col_types = cols(
     .default = "?", 
+    abv = "d",
     state = "i",
     mode_type = "i",
     ferment = "c",
@@ -141,10 +142,10 @@ df_pulse_marked <- df %>%
 
 Check the outcome...
 
-```{r}
+```{r eval=FALSE}
 
 df_pulse_marked
-view(df_pulse_marked)
+# view(df_pulse_marked)
 
 ```
 
