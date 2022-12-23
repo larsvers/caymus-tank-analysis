@@ -7,6 +7,8 @@ This requires the `df-pulse.csv` created at `02 create pulse data.Rmd`.
 
 The transformation builds on the `analysis summary v3.Rmd` file.
 
+Note that the analysis requires pulse cooling periods for each year to make sense. If there aren't any (like for example 2022 in Tank F1) there won't be anything to analyse.
+
 ```{r libs, include=FALSE}
 library(tidyverse)
 library(lubridate)
@@ -17,7 +19,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/E1"
+path_tank <- "/F1"
 ```
 
 
@@ -191,15 +193,14 @@ df_pulse %>% summary()
 
 ```
 
-
 Focus in on the 21 and the 22 fermentations ONLY PHASE 2 and run analysis only for those two
 
 ```{r}
 
 df_focus <- df_pulse %>% 
   filter(ferment_bool, ferment_phase == "Phase 2") %>% 
-  mutate(year = year(time), dataset = ifelse(year == 2021, "21", "22"))
-  
+  mutate(year = year(time), dataset = as.character(year))
+
 ```
 
 # Overview
@@ -256,6 +257,7 @@ point_4s <- df_ferment_pulse %>%
   filter(ferment_bool) %>% 
   mutate(pulse_value = ifelse(!is.na(pulse), -20, NA_real_)) %>% 
   ggplot() +
+    geom_hline(aes(yintercept = 0), colour = '#cccccc') +
     geom_line(aes(x = time, y = brix), colour = "#cccccc") +
     geom_line(aes(x = time, y = brix_smooth)) +
     geom_line(aes(x = time, y = pulse_value, label = pulse_group), colour = "cornflowerblue", size = 3) +
@@ -270,6 +272,7 @@ point_4s <- df_ferment_pulse %>%
   filter(ferment_bool) %>% 
   mutate(pulse_value = ifelse(!is.na(pulse), 40, NA_real_)) %>%
   ggplot() +
+    geom_hline(aes(yintercept = 0), colour = '#cccccc') +
     geom_line(aes(x = time, y = setpoint), colour = "#cccccc") +
     geom_line(aes(x = time, y = temp)) +
     geom_line(aes(x = time, y = pulse_value, label = pulse_group), colour = "cornflowerblue", size = 3) +
@@ -370,12 +373,22 @@ Check for significance
 ratio_21 <- df_pulses_per_day %>% filter(year == "21") %>% pull(ratio)
 ratio_22 <- df_pulses_per_day %>% filter(year == "22") %>% pull(ratio)
 
-# https://www.guru99.com/r-t-test-one-sample.html
-t.test(ratio_21, ratio_22, paired = TRUE, var.equal = TRUE)
+if (length(ratio_21) == length(ratio_22)) {
+  # https://www.guru99.com/r-t-test-one-sample.html
+  t.test(ratio_21, ratio_22, paired = TRUE, var.equal = TRUE)
+} else {
+  print("t-test not possible - we need the same number of fermentations")
+}
+
 
 ```
 
 ## Density comparison
+
+```{r}
+df_focus
+```
+
 
 ```{r}
 

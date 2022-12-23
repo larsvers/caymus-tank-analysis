@@ -21,7 +21,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/E1"
+path_tank <- "/F1"
 ```
 
 # Load required data
@@ -131,6 +131,8 @@ df_brix <- df %>%
   
 ```
 
+TODO: Ok these defences wipe out all sensible F1 fermentation periods :))
+
 ### Defences
 
 Check and remove faux fermentation periods
@@ -167,30 +169,49 @@ df_brix <- df_brix %>%
 
 #### Too short 
 
-TODO: also defend against periods that are too short! (see E1 22 false positive)
-
 ```{r}
 # Single out all ferment_periods that are shorter than 3 days
-short_periods <- df_brix %>% 
+short_periods <- df_brix %>%
   filter(ferment == "start" | ferment == "end") %>% 
   group_by(ferment_period, ferment, time) %>% 
   count() %>% 
-  ungroup() %>% 
-  mutate(period_in_days = (as.numeric(lag(time) - time)) / 60 / 24) %>% 
+  ungroup() %>%
+  mutate(period_in_days = difftime(lag(time), time, units = "days") %>% as.double) %>% 
+  filter(ferment == "start") %>% 
   filter(period_in_days > 0, period_in_days < 3) %>% 
   pull(ferment_period)
 
 # Remove them.
-df_brix <- df_brix %>% 
+df_brix <- df_brix %>%
   mutate(
     ferment_bool = ifelse(ferment_period %in% short_periods, FALSE, ferment_bool),
     ferment_period = ifelse(ferment_bool, ferment_period, NA_character_),
     ferment = ifelse(ferment_bool, ferment, NA_character_),
-  ) 
+  )
   
 ```
 
+### Single start or end points
 
+```{r}
+
+orphans <- df_brix %>%
+  filter(ferment == "start" | ferment == "end") %>% 
+  group_by(ferment_period) %>% 
+  count() %>% 
+  filter(n == 1) %>% 
+  pull(ferment_period)
+  
+# Remove them.
+df_brix <- df_brix %>%
+  mutate(
+    ferment_bool = ifelse(ferment_period %in% orphans, FALSE, ferment_bool),
+    ferment_period = ifelse(ferment_bool, ferment_period, NA_character_),
+    ferment = ifelse(ferment_bool, ferment, NA_character_),
+  )
+
+
+```
 
 ### Visual ferment period check:
 

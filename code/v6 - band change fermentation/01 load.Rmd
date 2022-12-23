@@ -17,7 +17,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/E1"
+path_tank <- "/F1"
 ```
 
 # Check a single month (only for initial testing)
