@@ -69,7 +69,7 @@ Step 1) Focus on brix changes
 
 Step 2) Identify fermentation periods
 
-  - Identify fermentation start periods by simply mark all brix values above 15 brix (brix only ever goes beyond ~ +15 when a fermentation starts)
+  - Identify fermentation start periods by simply marking all brix values above 15 brix (brix only ever goes beyond ~ +15 when a fermentation starts)
   - Next identify all potential end periods by marking all brix values below -100 brix. There will be many and only a few will be real end points
   - We identify the real end points in the next step
   
@@ -131,11 +131,36 @@ df_brix <- df %>%
   
 ```
 
-TODO: Ok these defences wipe out all sensible F1 fermentation periods :))
+
+Check visually
+
+```{r}
+
+# Just checking ferment phase start and end.
+starts <- df_brix %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df_brix %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+(p <- df_brix %>% 
+  ggplot() +
+    geom_line(aes(x = time, y = brix)) + 
+    geom_vline(aes(xintercept = starts), colour = 'cornflowerblue') +
+    geom_vline(aes(xintercept = ends), colour = 'maroon') 
+)
+
+plotly::ggplotly(p)
+
+```
 
 ### Defences
 
 Check and remove faux fermentation periods
+
+(check for defences not to wipe out sensible fermentation periods as was the case with tank F1)
 
 #### No curve
 
@@ -170,6 +195,7 @@ df_brix <- df_brix %>%
 #### Too short 
 
 ```{r}
+
 # Single out all ferment_periods that are shorter than 3 days
 short_periods <- df_brix %>%
   filter(ferment == "start" | ferment == "end") %>% 
@@ -346,15 +372,15 @@ Sometimes that's a bit too early, sometimes it's too late. We can conceive a mor
 
 #### Detect fermentation start and end points (points 2, 4) | automatic
 
-For each fermentation period calculate the LOESS smoothed brix curve, the smooth brix curve's slope (1st derivative) and the smoth brix curve's accelration (2nd derivative). 
+For each fermentation period calculate the LOESS smoothed brix curve, the smooth brix curve's slope (1st derivative) and the smoth brix curve's acceleration (2nd derivative). 
 
-We'll use the slope and accelration to detect points 2 (curve start), just the slope to detect point 3 (curve inflection) and 4 (curve end).
+We'll use the slope and acceleration to detect points 2 (curve start), just the slope to detect point 3 (curve inflection) and 4 (curve end).
 
 We do so by using tidyr's nesting on`df_brix` which creates list-columns for each fermentation_period in order for loess and gradient to run on each nested period data.
 
 Note, we're using r's base loess function with a span we set to **0.15**. 0.25 worked well on D1 but botched a fermentation on C1 which needed a tighter curve. 
 
-We're NOT using STL decomposition with a loess trend as this is just much simpler :))
+We're NOT using STL decomposition with a loess trend as base loess is just much simpler :))
 
 ```{r}
 
@@ -439,14 +465,14 @@ df_brix_smooth %>%
 
 ```
 
-Add points 2 and 4, the start of phase 2 and the start of phase 3 next. Note, that there can be fermentation curves that skip phase 1 altogether and start with phase 2 straight away. Simple reason being, the smooth brix curve gradient is negative from the start.
+Add points 2 and 4 next (the start of phase 2 and the start of phase 3). Note, that there can be fermentation curves that skip phase 1 altogether and start with phase 2 straight away. Simple reason being, the smooth brix curve gradient is negative from the start.
 
 Point 2 conditons - curve start, brix falls off:
 
 1. The brix curve needs to be falling (1st derivative / slope < 0)
 2. The brix curve's fall needs to be accelerating (2nd derivative / acceleration < 0)
 
-Point 4 condition - curve inflection, brix slope increaes: brix must be below 0
+Point 4 condition - curve end: brix must be below 0
 
 ```{r}
 
@@ -460,7 +486,7 @@ ferment_curve_start_times <- df_brix_smooth %>%
   distinct(first, .keep_all = TRUE) %>% 
   pull(time)
 
-# Get the times for point (4): brix below 0
+# Get the times for point 4: brix below 0
 ferment_curve_end_times <- df_brix_smooth %>% 
   filter(ferment_bool, brix_smooth < 0) %>% 
   group_by(ferment_period) %>% 

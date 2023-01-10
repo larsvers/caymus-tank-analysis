@@ -8,7 +8,7 @@ This notebook requires the dataset `df_clean_ferment.csv` produced in  v6' `02 f
 The notebook creates a df_pulse summarising pulse colling periods.
 
 ```{r libs, include=FALSE}
-library(tidyverse)
+library(tidyverse)          
 library(lubridate)
 library(ggplot2)
 detach("package:dplyr")
