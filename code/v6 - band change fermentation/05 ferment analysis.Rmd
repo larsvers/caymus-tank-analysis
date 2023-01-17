@@ -1,0 +1,351 @@
+---
+title: "Fermentation curve analysis | v6"
+output: html_notebook
+---
+
+This notebook gets and analysis all fermentation curve data.
+
+```{r libs, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tanks <- c("/C1","/D1","/E1","/F1")
+```
+
+# Load and prep
+
+Load all available data - collating `df`'s
+
+```{r load-data}
+
+load_data <- function(dir) {
+  print(dir)
+
+  path <- paste0(path_root, path_data, dir, "/clean/df_brix_smooth.csv")
+
+  df <- read_csv(path, 
+          col_types = cols(
+            .default = "?", 
+            ferment = "c",
+            ferment_period = "c",
+            ferment_point = "c",
+            ferment_phase = "c",
+            ferment_period_phase = "c")
+          )
+  
+  df <- df %>% mutate(tank = str_replace(dir, "/", ""))
+  
+  return(df)
+}
+
+df_list <- lapply(path_tanks, load_data)
+
+df <- bind_rows(df_list) %>% as_tibble()
+
+```
+
+Only keep fermentation curves:
+
+```{r filter-non-ferment}
+
+df <- df %>% filter(ferment_bool)
+
+```
+
+Check
+
+```{r check-data}
+
+skimr::skim(df)
+
+df %>% group_by(ferment_period) %>% count()
+
+```
+
+# Visualise
+
+Visualise all 
+
+```{r visualise}
+
+# Get a vector of points to draw the ferment point lines.
+starts <- df %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+  pull(check)
+
+point_3s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+  pull(check)
+
+point_4s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+  pull(check)
+
+# Plot
+p1 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix)) +
+    geom_line(aes(y = brix_smooth), colour = 'tomato') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free")
+
+p2 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free")
+  
+p3 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_2), colour = 'peru') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free")
+  
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+plotly::ggplotly(p3)
+
+```
+
+
+# Mean curve
+
+Get the ideal curve:
+
+```{r}
+
+# Get a row index to overlay all fermentation curves.
+df_index <- df %>% 
+  group_by(ferment_period) %>% 
+  mutate(index = row_number()) %>% 
+  ungroup()
+
+write_csv(df_index, "test.csv")
+
+# Visualise with line.
+ggplot(df_index, aes(x = index, y = brix_smooth)) +
+  geom_hline(aes(yintercept = 0), alpha = 0.2) +
+  geom_rect(aes(xmin = -Inf, xmax = Inf, ymin = 0, ymax = -Inf), fill = "white", alpha = 0.05) +
+  geom_line(aes(group = ferment_period), alpha = 0.2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.2)
+
+# Build plot to harvest its data for the single line below 
+# (w/o hline as that cocks up the final data)..
+p <- ggplot(df_index, aes(x = index, y = brix_smooth)) +
+  geom_line(aes(group = ferment_period), alpha = 0.2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.2)
+
+# Get the loess average curve data.
+df_ideal_curve <- ggplot_build(p)$data[[2]] %>% 
+  as_tibble() %>% 
+  select(x, y)
+
+# Show just ideal curve
+ggplot(df_ideal_curve, aes(x = x, y = y)) +
+  geom_line()
+
+```
+
+This is ok, but one problem is the index - we'd rather have evenly spaced timepoints. The other problem is that loess does a good job in most areas (notably the start) but -probably due to the variable length time series distorts the more in moves towards the end.
+
+So an alternative algorithm would need to: 
+
+1. Evenly space the timepoints of each curve
+2. Resample the data to have equal length
+3. Take an average/median for each value
+
+See also here for a [matlab answer](https://www.mathworks.com/matlabcentral/answers/1463604-plotting-an-average-of-multiple-time-series-of-different-length)
+
+I tried with normalising the start date and the duration. But that didn't quite work out:
+
+```{r}
+
+# Rather than an index, let's get a time vector starting at time = 0.
+df_time_diff <- df %>%
+  group_by(ferment_period) %>% 
+  mutate(
+    time_diff = difftime(time, lag(time), units = "days"),
+    time_diff = ifelse(is.na(time_diff), 0, time_diff),
+    time_diff_cum = cumsum(time_diff),
+    time_new = as.Date("2023-01-01") + as.difftime(time_diff_cum, units = "days")
+  ) %>%
+  ungroup() 
+
+df_time_diff %>%
+  select(time, time_diff, time_diff_cum, time_new)
+
+df_time_diff %>%
+  select(time, time_diff, time_diff_cum, time_new) %>% 
+  summary()
+
+# Visualise.
+(p <- ggplot(df_time_diff, aes(x = time_new, y = brix_smooth)) +
+  geom_line(aes(group = ferment_period), alpha = 0.2) +
+  geom_smooth(se = FALSE, method = "loess", span = 0.2))
+
+# Get the loess average curve data.
+df_ideal_curve <- ggplot_build(p)$data[[2]] %>% 
+  as_tibble() %>% 
+  select(x, y)
+
+# Show just ideal curve
+ggplot(df_ideal_curve, aes(x = x, y = y)) +
+  geom_line()
+
+
+```
+
+Problem here is the unevenly spaced time series for each curve I believe? If that's the case, a solution might be to convert to evenly spaced (uniform across all curves) event durations. 
+
+Some more pointers [here](https://www.google.com/search?q=r+convert+unevenly+spaced+time+series+to+evenly+spaced+time+series&rlz=1C5CHFA_enDE796DE796&oq=r+convert+unevenly+spaced+time+series+to+evenly+spaced+time+series&aqs=chrome..69i57j69i64l3.16854j0j1&sourceid=chrome&ie=UTF-8)
+
+TODO
+
+# Profiling
+
+Nice!
+
+Now let's get the base data covering:
+
+- duration of fermentation phase
+- duration of fermentation curve
+- distance between start and inflection point
+- distance between inflection point and end
+- brix levels at each point
+
+
+```{r data-prep}
+
+# Check how many periods we have in total.
+df %>% distinct(ferment_period)
+
+# Add duration between way points.
+df_days <- df %>% 
+  filter(!is.na(ferment_point)) %>% 
+  mutate(diff_days_all = difftime(time, lag(time), units = "days") %>% as.numeric) %>% 
+  select(tank, ferment_period, ferment_point, starts_with("diff"))
+
+# Calculate durations from fermentation phase start.
+df_days_full <- df_days %>% 
+  group_by(ferment_period) %>% 
+  mutate(diff_days_all = ifelse(row_number() == 1, 0, diff_days_all)) %>% 
+  mutate(diff_from_phase_start = cumsum(diff_days_all)) %>% 
+  ungroup()
+
+# Calculate durations from fermentation curve start.
+df_days_curve <- df_days_full %>% 
+  filter(ferment_point != "Point 1", ferment_point != "Point 5") %>% 
+  group_by(ferment_period) %>% 
+  mutate(diff_days_curve = ifelse(ferment_point == "Point 2", 0, diff_days_all)) %>% 
+  mutate(diff_from_curve_start = cumsum(diff_days_curve)) %>% 
+  ungroup()
+
+# Merge.
+df_waypoints <- left_join(df_days_full, 
+                          df_days_curve %>% 
+                            select(ferment_period, ferment_point, diff_from_curve_start), 
+                          by = c("ferment_period", "ferment_point"))
+
+# Add brix level at each point.
+df_waypoints <- left_join(df_waypoints, 
+                          df %>%
+                            filter(!is.na(ferment_point)) %>% 
+                            select(ferment_period, ferment_point, brix, brix_smooth), 
+                          by = c("ferment_period", "ferment_point"))
+ 
+
+df_waypoints
+df_waypoints %>% skimr::skim()
+
+```
+
+Show the normal duration and brix values.
+
+```{r normal-values}
+
+# Density graph function:
+show_freqs <- function(data, var, mean_var, median_var) {
+  # Prep vars
+  var = enquo(var)
+  mean_var = enquo(mean_var)
+  median_var = enquo(median_var)
+  
+# Make plot
+p <- ggplot(data) +
+  geom_histogram(aes(x = !!var), bins = 50, alpha = 0.2) +
+  geom_density(aes(x = !!var, y = 0.5 * ..count..)) +
+  geom_vline(aes(xintercept = !!mean_var)) +
+  geom_vline(aes(xintercept = !!median_var), linetype = "dashed", alpha = 0.6) +
+  geom_label(aes(x = !!mean_var, y = Inf, label = round(!!mean_var, 1)), vjust = 1.2, hjust = -0.2) +
+  facet_wrap(~ferment_point_label, scales = "free") +
+  theme(strip.text.x = element_text(size = 9, face = "bold", colour = "#666666"))
+  
+  # Showplot
+  print(p)
+}
+
+# Plot data with mean and median data.
+df_plot <- df_waypoints %>% 
+  # Get facet labels ready.
+  mutate(ferment_point_label = case_when(
+    ferment_point == "Point 1" ~ "Point 1 | Phase start",
+    ferment_point == "Point 2" ~ "Point 2 | Curve start",
+    ferment_point == "Point 3" ~ "Point 3 | Inflection",
+    ferment_point == "Point 4" ~ "Point 4 | Curve end",
+    ferment_point == "Point 5" ~ "Point 5 | Phase end",
+    TRUE ~ "NONE",
+  )) %>% 
+  # For each ferment_period...
+  group_by(ferment_point) %>% 
+  # ...get means and median values for each of the numeric columns.
+  mutate(mean_diff_days_all = mean(diff_days_all)) %>% 
+  mutate(mean_diff_from_phase_start = mean(diff_from_phase_start)) %>% 
+  mutate(mean_diff_from_curve_start = mean(diff_from_curve_start)) %>% 
+  mutate(mean_brix_smooth = mean(brix_smooth)) %>% 
+  mutate(median_diff_days_all = median(diff_days_all)) %>% 
+  mutate(median_diff_from_phase_start = median(diff_from_phase_start)) %>% 
+  mutate(median_diff_from_curve_start = median(diff_from_curve_start)) %>% 
+  mutate(median_brix_smooth = median(brix_smooth))
+
+# Visualise.
+show_freqs(df_plot, diff_days_all, mean_diff_days_all, median_diff_days_all)
+show_freqs(df_plot, diff_from_phase_start, mean_diff_from_phase_start, median_diff_from_phase_start)
+show_freqs(df_plot, diff_from_curve_start, mean_diff_from_curve_start, median_diff_from_curve_start)
+show_freqs(df_plot, brix_smooth, mean_brix_smooth, median_brix_smooth)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

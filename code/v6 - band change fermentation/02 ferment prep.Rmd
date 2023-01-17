@@ -21,7 +21,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/F1"
+path_tank <- "/D1"
 ```
 
 # Load required data
@@ -114,10 +114,10 @@ df_brix <- df %>%
 
   # 5) Rename first fermentation value to "start".
   mutate(ferment = if_else(ferment == "ferment" & is.na(lag(ferment)), "start", ferment)) %>%
-
-  # 6) Name the fermentation period with their start date.
+  
+  # 6) Name the fermentation period with their tank and start date.
   mutate(ferment_period = case_when(
-    ferment == "start" ~ format(time, "%y-%b-%d"),
+    ferment == "start" ~ paste0(stringr::str_replace(path_tank, "/", ""), "-", format(time, "%y-%b-%d")),
     ferment == "end" ~ "end",
     TRUE ~ NA_character_))  %>%
   fill(ferment_period) %>%
@@ -582,7 +582,7 @@ Check visually by fermentation period:
 
 # Check brix_smooth and brix_deriv_1 make sense.
 p1 <- df_brix_smooth %>%
-  # filter(!is.na(ferment_period)) %>% 
+  # filter(!is.na(ferment_period)) %>%
   ggplot(aes(x = time)) +
     geom_line(aes(y = brix)) +
     geom_line(aes(y = brix_smooth), colour = 'tomato') +
@@ -611,6 +611,12 @@ plotly::ggplotly(p1)
 plotly::ggplotly(p2)
 plotly::ggplotly(p3)
 
+```
+
+```{r}
+df_brix_smooth %>% 
+  group_by(ferment_period) %>% 
+  count
 ```
 
 #### Fill the fermentation phases
@@ -687,3 +693,88 @@ df %>%
 
 ```
 
+# Charts for the doc / presentation
+
+We're taking an example fermentation and build a few charts
+
+```{r eval=FALSE}
+
+# Data.
+df_sample <- df_brix_smooth %>%
+  # filter(ferment_period=="D1-22-Sep-29")
+  filter(ferment_period=="D1-21-Oct-02")
+
+# Get waypoint vectors.
+starts <- df_sample %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df_sample %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2s <- df_sample %>% 
+  mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+  pull(check)
+
+point_3s <- df_sample %>% 
+  mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+  pull(check)
+
+point_4s <- df_sample %>% 
+  mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+  pull(check)
+
+# Graphing function (adding waypoints and facet).
+add_points <- function(p) {
+  p <- p +
+    geom_vline(aes(xintercept = starts), colour = 'darkgreen') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    geom_vline(aes(xintercept = ends), colour = 'darkred') +
+    facet_wrap(~ferment_period, scales = "free")
+    
+  print(p)
+}
+
+# Check brix_smooth and brix_deriv_1 make sense.
+(p1_base <- df_sample %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), alpha = 0.4, size = 0.25) +
+    geom_line(aes(y = brix_smooth), colour = 'black', size = 0.75))
+
+(p2_base <- df_sample %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'skyblue', size = 0.75))
+
+(p3_base <- df_sample %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_2), colour = 'peru', size = 0.75))
+
+p1 <- df_sample %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), alpha = 0.4, size = 0.25) +
+    geom_line(aes(y = brix_smooth), colour = 'black', size = 0.75)
+
+p1 <- add_points(p1)
+
+p2 <- df_sample %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'skyblue', size = 0.75)
+
+p2 <- add_points(p2)
+
+p3 <- df_sample %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_2), colour = 'peru', size = 0.75) 
+
+p3 <- add_points(p3)
+  
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+plotly::ggplotly(p3)
+
+
+
+```
