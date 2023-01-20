@@ -21,7 +21,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/D1"
+path_tank <- "/E1"
 ```
 
 # Load required data
@@ -131,7 +131,6 @@ df_brix <- df %>%
   
 ```
 
-
 Check visually
 
 ```{r}
@@ -162,7 +161,7 @@ Check and remove faux fermentation periods
 
 (check for defences not to wipe out sensible fermentation periods as was the case with tank F1)
 
-#### No curve
+#### Incorrect falloff
 
 Above algo detected a false positive fermentation period for tank C1 that lingered constantly at around 20 brix before falling off. 
 
@@ -522,7 +521,8 @@ Note: this requires all history and needs to be re-written for real time detecti
 inflection_times <- df_brix_smooth %>% 
   fill(ferment_phase) %>%
   filter(ferment_phase == 'Phase 2') %>% 
-  filter(ferment_bool, brix_deriv_1_smooth < 0, brix_smooth > 5) %>%
+  filter(ferment_bool, brix_deriv_1_smooth < 0) %>%
+  # filter(ferment_bool, brix_deriv_1_smooth < 0, brix_smooth > 5) %>%
   group_by(ferment_period) %>%
   slice_min(brix_deriv_1_smooth) %>% 
   pull(time)
