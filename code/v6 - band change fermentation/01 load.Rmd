@@ -9,6 +9,7 @@ This notebook is loading the 6th version of the data which should cover Jan 21 t
 
 TODO: Continue with E1
 ```{r libs, include=FALSE}
+
 library(tidyverse)
 library(ggplot2)
 detach("package:dplyr")
@@ -18,6 +19,7 @@ library(dplyr)
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
 path_tank <- "/F1"
+
 ```
 
 # Check a single month (only for initial testing)

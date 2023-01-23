@@ -309,15 +309,26 @@ df_days <- df %>%
 
 # Visualise lines with mean and median lines.
 ggplot() +
+  # Core stuff
+  geom_hline(aes(yintercept = 0), alpha= 0.2) +
   geom_line(data = df_days, aes(x = day, y = brix_smooth, group = ferment_period), alpha = 0.25, size = 0.25) +
   geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
-  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), size = 0.5, linetype = "dashed")
-    
+  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed")
 
+ggplot() +
+  # Core stuff
+  geom_hline(aes(yintercept = 0), alpha= 0.2) +
+  geom_line(data = df_days, aes(x = day, y = brix_smooth, group = ferment_period), alpha = 0.25, size = 0.25) +
+  geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
+  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed") +
+  # Ornaments
+  geom_vline(data = df_normals, aes(xintercept = median_diff_from_phase_start, colour = ferment_point)) +
+  geom_label(data = df_normals, aes(label = round(median_diff_from_phase_start, 1), x = median_diff_from_phase_start), y = -50, alpha = 0.75, label.r = unit(0, "lines")) +
+  geom_label(data = df_normals %>% filter(ferment_point != "Point 5"), aes(label = round(median_brix_smooth, 1), x = median_diff_from_phase_start, y = median_brix_smooth), alpha = 0.75, label.r = unit(0, "lines")) +
+  scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
+  theme(legend.position = "none")
 
 ```
-
-TODO: Add waypoint lines and labels
 
 ---
 
