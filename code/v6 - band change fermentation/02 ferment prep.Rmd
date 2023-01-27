@@ -91,7 +91,7 @@ Step 7) Add a ferment boolean
 
 # Identify fermentation periods
 df_brix <- df %>%
-  select(time, brix) %>%
+  select(time, brix, temp) %>%
   # filter(time > lubridate::ymd("2021-09-14"), time < "2021-10-20") %>%
   
   # 1) keep only brix changes.
@@ -328,7 +328,7 @@ Now let's see what works for point (2):
 ```{r eval=FALSE}
 
 # Create base data (based on specific periods)
-df_test <-df_brix %>% 
+df_test <- df_brix %>% 
   rowid_to_column("index") %>% 
   filter(ferment_period == "21-Nov-01")
   # filter(ferment_period == "21-Oct-02")
@@ -429,7 +429,7 @@ df_brix_smooth <- df_brix %>%
 
   # Clean up
   select(-index) %>% 
-  select(time, brix, brix_smooth, brix_deriv_1, brix_deriv_1_smooth, brix_deriv_2, ferment, ferment_bool, ferment_period, ferment_point, ferment_phase) %>% 
+  select(time, brix, brix_smooth, brix_deriv_1, brix_deriv_1_smooth, brix_deriv_2, ferment, ferment_bool, ferment_period, ferment_point, ferment_phase, temp) %>% 
   arrange(time)
 
 ```
@@ -521,8 +521,7 @@ Note: this requires all history and needs to be re-written for real time detecti
 inflection_times <- df_brix_smooth %>% 
   fill(ferment_phase) %>%
   filter(ferment_phase == 'Phase 2') %>% 
-  filter(ferment_bool, brix_deriv_1_smooth < 0) %>%
-  # filter(ferment_bool, brix_deriv_1_smooth < 0, brix_smooth > 5) %>%
+  filter(ferment_bool, brix_deriv_1_smooth < 0, brix_smooth > 5) %>%
   group_by(ferment_period) %>%
   slice_min(brix_deriv_1_smooth) %>% 
   pull(time)
@@ -640,6 +639,7 @@ df_brix_smooth <- df_brix_smooth %>%
       paste(ferment_period, ferment_phase), 
       NA_character_)
     )
+
 ```
 
 # Write brix focussed data
@@ -659,7 +659,8 @@ Next we augment the original dataset with the extra fermentation variables which
 ```{r}
 
 df %>% 
-  left_join(df_brix_smooth, by = c("time", "brix")) %>% 
+  # Join all but the temp (which is fully available in the rhs)
+  left_join(df_brix_smooth %>% select(-temp), by = c("time", "brix")) %>% 
 
   # Fill vars which are straight fillable
   fill(brix_smooth, brix_deriv_1, brix_deriv_1_smooth, ferment_bool) %>% 

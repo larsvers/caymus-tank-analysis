@@ -19,7 +19,7 @@ library(dplyr)
 # Project path
 path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
 path_data <- "/data/v6"
-path_tank <- "/F1"
+path_tank <- "/C1"
 ```
 
 
@@ -380,7 +380,6 @@ if (length(ratio_21) == length(ratio_22)) {
   print("t-test not possible - we need the same number of fermentations")
 }
 
-
 ```
 
 ## Density comparison
@@ -475,8 +474,8 @@ Next, let's check for significance with a paired t test:
 doit <- function(vars) {
   p_values = c()
   for (var in vars) {
-    vector_21 <- df_focus %>% filter(dataset == "21") %>% pull(var)
-    vector_22 <- df_focus %>% filter(dataset == "22") %>% pull(var)
+    vector_21 <- df_focus %>% filter(dataset == "2021") %>% pull(var)
+    vector_22 <- df_focus %>% filter(dataset == "2022") %>% pull(var)
     p_values = c(p_values, t.test(vector_21, vector_22)$p.value)
   }
   result <- tibble(

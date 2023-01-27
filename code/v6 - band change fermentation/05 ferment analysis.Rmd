@@ -58,7 +58,7 @@ df <- df %>% filter(ferment_bool)
 
 ```
 
-Check
+Check and write
 
 ```{r check-data}
 
@@ -96,34 +96,141 @@ point_4s <- df %>%
   pull(check)
 
 # Plot
-p1 <- df %>%
+(p1 <- df %>%
   ggplot(aes(x = time)) +
-    geom_line(aes(y = brix)) +
-    geom_line(aes(y = brix_smooth), colour = 'tomato') +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
     geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
-    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
     geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
-    facet_wrap(~ferment_period, scales = "free")
+    facet_wrap(~ferment_period, scales = "free"))
 
-p2 <- df %>% 
+(p2 <- df %>% 
   ggplot(aes(x = time)) +
-    geom_line(aes(y = brix_deriv_1_smooth), colour = 'steelblue') +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'cornflowerblue') +
     geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
-    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
     geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
-    facet_wrap(~ferment_period, scales = "free")
+    facet_wrap(~ferment_period, scales = "free"))
   
-p3 <- df %>% 
+(p3 <- df %>% 
   ggplot(aes(x = time)) +
     geom_line(aes(y = brix_deriv_2), colour = 'peru') +
     geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
-    geom_vline(aes(xintercept = point_3s), colour = 'khaki') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
     geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
-    facet_wrap(~ferment_period, scales = "free")
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p4 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = temp), color = "#666666") +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
   
 plotly::ggplotly(p1)
 plotly::ggplotly(p2)
 plotly::ggplotly(p3)
+plotly::ggplotly(p4)
+
+```
+
+Show fermentations brix and temp in batches and order:
+
+```{r eval=FALSE}
+
+# Get all ferment periods.
+df %>% 
+  group_by(ferment_period) %>% 
+  count() %>% 
+  pull(ferment_period)
+
+# MANUAL! Go into VS code, order them and split them into their tanks
+tank_c_ferments <- c("C1-21-Sep-03", "C1-22-Sep-12", "C1-22-Sep-29", "C1-21-Oct-01")
+tank_d_ferments <- c("D1-21-Sep-14", "D1-21-Oct-02", "D1-21-Oct-19", "D1-21-Nov-01", "D1-22-Sep-09", "D1-22-Sep-21", "D1-22-Sep-29", "D1-22-Aug-21")
+tank_e_ferments <- c("E1-21-Sep-09", "E1-21-Oct-29", "E1-21-Sep-28", "E1-22-Sep-10", "E1-22-Sep-22", "E1-22-Oct-03")
+tank_f_ferments <- c("F1-21-Jun-03", "F1-22-Aug-26", "F1-21-Sep-11", "F1-21-Sep-30")
+
+# ---
+
+build_brix_temp_charts <- function(tank_ferments, interactive = FALSE) {
+  for (fermentation in tank_ferments) {
+    
+    # Filter the data for each fermentation period.
+    df_filtered <- df %>% 
+      filter(ferment_period == fermentation)
+    
+    # Set the label points.
+    starts <- df_filtered %>% 
+      mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+      pull(check)
+  
+    ends <- df_filtered %>% 
+      mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+      pull(check)
+    
+    point_2s <- df_filtered %>% 
+      mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+      pull(check)
+    
+    point_3s <- df_filtered %>% 
+      mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+      pull(check)
+    
+    point_4s <- df_filtered %>% 
+      mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+      pull(check)
+    
+    # Brix chart (also removing the x axis).
+    p1 <- df_filtered %>%
+      ggplot(aes(x = time)) +
+        geom_hline(aes(yintercept = 0), alpha = 0.35) +
+        geom_line(aes(y = brix), color = "#cccccc") +
+        geom_line(aes(y = brix_smooth), colour = 'hotpink') +
+        geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+        geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+        geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+        ylim(-10, NA) +
+        labs(title = fermentation) +
+        theme(plot.title = element_text(color="#999999",face="bold"),
+              axis.ticks.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.title.x = element_blank())
+    
+    # Temp chart.
+    p2 <- df_filtered %>%
+      ggplot(aes(x = time)) +
+        geom_line(aes(y = temp), color = "#999999") +
+        geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+        geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+        geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+        theme(axis.title.x = element_blank())
+  
+    if (!interactive) {
+      # Print static.
+      suppressWarnings(gridExtra::grid.arrange(p1, p2, nrow = 2))
+    } else {
+      # Print interactive.
+      pl1 <- plotly::ggplotly(p1)
+      pl2 <- plotly::ggplotly(p2)
+      
+      print(plotly::subplot(pl1, pl2, nrows = 2))
+    }
+  }
+}
+
+# Show static charts.
+build_brix_temp_charts(tank_c_ferments)
+build_brix_temp_charts(tank_d_ferments)
+build_brix_temp_charts(tank_e_ferments)
+build_brix_temp_charts(tank_f_ferments)
+
+# Show interactive charts.
+build_brix_temp_charts(tank_d_ferments, interactive = TRUE)
+build_brix_temp_charts(tank_c_ferments, interactive = TRUE)
+build_brix_temp_charts(tank_e_ferments, interactive = TRUE)
+build_brix_temp_charts(tank_f_ferments, interactive = TRUE)
 
 ```
 
@@ -136,6 +243,7 @@ Variables to profile:
 - distance between start and inflection point
 - distance between inflection point and end
 - brix levels at each point
+- temperatures at each point
 
 
 ```{r data-prep}
@@ -174,7 +282,7 @@ df_waypoints <- left_join(df_days_full,
 df_waypoints <- left_join(df_waypoints, 
                           df %>%
                             filter(!is.na(ferment_point)) %>% 
-                            select(ferment_period, ferment_point, brix, brix_smooth), 
+                            select(ferment_period, ferment_point, brix, brix_smooth, temp), 
                           by = c("ferment_period", "ferment_point"))
  
 
@@ -210,6 +318,7 @@ p <- ggplot(data) +
 
 # Plot data with mean and median data.
 df_normals_per_line <- df_waypoints %>% 
+
   # Get facet labels ready.
   mutate(ferment_point_label = case_when(
     ferment_point == "Point 1" ~ "Point 1 | Phase start",
@@ -219,29 +328,37 @@ df_normals_per_line <- df_waypoints %>%
     ferment_point == "Point 5" ~ "Point 5 | Phase end",
     TRUE ~ "NONE",
   )) %>% 
+
   # For each ferment_period...
   group_by(ferment_point) %>% 
+
   # ...get means and median values for each of the numeric columns.
   mutate(mean_diff_days_all = mean(diff_days_all)) %>% 
   mutate(mean_diff_from_phase_start = mean(diff_from_phase_start)) %>% 
   mutate(mean_diff_from_curve_start = mean(diff_from_curve_start)) %>% 
   mutate(mean_brix_smooth = mean(brix_smooth)) %>% 
+  mutate(mean_temp = mean(temp)) %>% 
+
   mutate(median_diff_days_all = median(diff_days_all)) %>% 
   mutate(median_diff_from_phase_start = median(diff_from_phase_start)) %>% 
   mutate(median_diff_from_curve_start = median(diff_from_curve_start)) %>% 
-  mutate(median_brix_smooth = median(brix_smooth))
+  mutate(median_brix_smooth = median(brix_smooth)) %>% 
+  mutate(median_temp = median(temp))
+
+df_normals_per_line
 
 # Visualise.
 show_freqs(df_normals_per_line, diff_days_all, mean_diff_days_all, median_diff_days_all)
 show_freqs(df_normals_per_line, diff_from_phase_start, mean_diff_from_phase_start, median_diff_from_phase_start)
 show_freqs(df_normals_per_line, diff_from_curve_start, mean_diff_from_curve_start, median_diff_from_curve_start)
 show_freqs(df_normals_per_line, brix_smooth, mean_brix_smooth, median_brix_smooth)
+show_freqs(df_normals_per_line, temp, mean_temp, median_temp)
 
 ```
 
 # Normal curve
 
-First we produce a spline based on the average fermentation phase waypoints. Then we extract that continuous spline data which we can then take to overlay all fermentation phase lines.
+First we produce a spline based on the average fermentation phase waypoints. Then we extract that continuous spline data which we can finally take to overlay all fermentation phase lines.
 
 First, we produce the splines and extract that data:
 
@@ -295,6 +412,11 @@ ggplot(df_mean_line, aes(x = day, y = brix_smooth)) + geom_line()
 Then we overlay all ferment phase lines with the mean and median lines.
 
 ```{r}
+df
+```
+
+
+```{r}
 
 # Create data with a column that counts up days from phase start to end.
 df_days <- df %>%
@@ -323,8 +445,11 @@ ggplot() +
   geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed") +
   # Ornaments
   geom_vline(data = df_normals, aes(xintercept = median_diff_from_phase_start, colour = ferment_point)) +
-  geom_label(data = df_normals, aes(label = round(median_diff_from_phase_start, 1), x = median_diff_from_phase_start), y = -50, alpha = 0.75, label.r = unit(0, "lines")) +
-  geom_label(data = df_normals %>% filter(ferment_point != "Point 5"), aes(label = round(median_brix_smooth, 1), x = median_diff_from_phase_start, y = median_brix_smooth), alpha = 0.75, label.r = unit(0, "lines")) +
+  geom_label(data = df_normals, aes(label = round(median_diff_from_phase_start, 1), x = median_diff_from_phase_start), y = -50, 
+                                    alpha = 0.85, label.r = unit(0, "lines")) +
+  geom_label(data = df_normals %>% filter(ferment_point != "Point 5"), 
+             aes(label = round(median_brix_smooth, 1), x = median_diff_from_phase_start, y = median_brix_smooth), 
+             alpha = 0.85, label.r = unit(0, "lines")) +
   scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
   theme(legend.position = "none")
 
@@ -332,7 +457,7 @@ ggplot() +
 
 ---
 
-Here is a previous version using loess smoothing of all lines, which is maybe good to keep but of no real value as we've sorted it above...
+Here is a previous version using loess smoothing of all lines, which might be good to keep but of no real value as we've sorted it above...
 
 ```{r eval=FALSE}
 
