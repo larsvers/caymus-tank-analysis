@@ -454,6 +454,15 @@ ggplot() +
   theme(legend.position = "none")
 
 ```
+---
+
+TODO:
+
+- Show Chart 1 above first (explaining mean and meadian ideal curve)
+- then show a new version of above aith just the duration labels (in the bottom)
+- lastly show the full chart 2 above
+
+After that make the point that variance is generally large by showing some of the histograms/densities from above
 
 ---
 
