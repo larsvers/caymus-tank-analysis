@@ -343,7 +343,7 @@ df_normals_per_line <- df_waypoints %>%
   mutate(median_diff_from_phase_start = median(diff_from_phase_start)) %>% 
   mutate(median_diff_from_curve_start = median(diff_from_curve_start)) %>% 
   mutate(median_brix_smooth = median(brix_smooth)) %>% 
-  mutate(median_temp = median(temp))
+  mutate(median_temp = median(temp)) 
 
 df_normals_per_line
 
@@ -355,6 +355,65 @@ show_freqs(df_normals_per_line, brix_smooth, mean_brix_smooth, median_brix_smoot
 show_freqs(df_normals_per_line, temp, mean_temp, median_temp)
 
 ```
+
+Let's check the variance by checking SD of Brix, duration and temp for each point. 
+
+```{r variance}
+
+# Get the SD and the CV for each numeric variable grouped by waypoint.
+df_normals_skimmed <- df_normals_per_line %>% 
+  select(ferment_point, starts_with("diff"), brix_smooth, temp) %>% 
+  group_by(ferment_point) %>% 
+  skimr::skim() %>% 
+  as_tibble() %>% 
+  # Adding the coefficient of variation
+  mutate(numeric.cv = numeric.sd / abs(numeric.mean) * 100)
+
+# Focus dataset (we only need three vars).
+df_normals_skimmed <- df_normals_skimmed %>% 
+  select(skim_variable, ferment_point, numeric.mean, numeric.sd, numeric.cv) %>% 
+  filter(skim_variable == "brix_smooth" | skim_variable == "diff_from_curve_start" | skim_variable == "temp")
+
+df_normals_skimmed
+
+# Plot mean.
+df_normals_skimmed %>% 
+  select(skim_variable, ferment_point, starts_with("numeric")) %>% 
+  ggplot() +
+    geom_bar(aes(x = ferment_point, y = numeric.mean), stat = "identity") +
+    geom_label(aes(x = ferment_point, 
+                   y = numeric.mean, label = round(numeric.mean, 1)),
+             stat = "identity", nudge_y = 0.75) +
+    facet_wrap(~skim_variable)
+
+# Plot SD.
+df_normals_skimmed %>% 
+  select(skim_variable, ferment_point, starts_with("numeric")) %>% 
+  ggplot() +
+    geom_bar(aes(x = ferment_point, y = numeric.sd), stat = "identity") +
+    geom_label(aes(x = ferment_point, 
+                   y = numeric.sd, label = round(numeric.sd, 1)),
+             stat = "identity", nudge_y = 0.75) +
+    facet_wrap(~skim_variable)
+
+# Plot CV.
+df_normals_skimmed %>% 
+  select(skim_variable, ferment_point, starts_with("numeric")) %>% 
+  ggplot() +
+    geom_bar(aes(x = ferment_point, y = numeric.cv), stat = "identity") +
+    geom_label(aes(x = ferment_point, 
+                   y = numeric.cv, label = scales::percent(numeric.cv / 100, accuracy = 1)),
+               stat = "identity", nudge_y = 6) +
+    facet_wrap(~skim_variable)
+
+```
+
+Variance is notable in parts:
+
+- Brix variance across Point 1 and 2 (phase start and curve start) relatively stable. It's quite stable across Point 3 (inflection) with an SD of +/- 5 Brix (28% CV)
+- The time in days between fermentation start and inflection can vary +/- 1.4 days which is notable given that the average is 2.8. The end date variability is with 2.6 days significantly higher in absolute terms but a little lower in relative terms as Point 4 is happening much later (6.4 days in average).
+- Temperature at fermentation start and inflection point can vary at around 7.7°F and at fermentation end point around 4.2°F, which is low in CV as the temperatures are relatively high (between 60 and 80°F)
+
 
 # Normal curve
 
@@ -412,11 +471,6 @@ ggplot(df_mean_line, aes(x = day, y = brix_smooth)) + geom_line()
 Then we overlay all ferment phase lines with the mean and median lines.
 
 ```{r}
-df
-```
-
-
-```{r}
 
 # Create data with a column that counts up days from phase start to end.
 df_days <- df %>%
@@ -430,6 +484,7 @@ df_days <- df %>%
   select(ferment_period, day, brix_smooth)
 
 # Visualise lines with mean and median lines.
+# No labels
 ggplot() +
   # Core stuff
   geom_hline(aes(yintercept = 0), alpha= 0.2) +
@@ -437,6 +492,35 @@ ggplot() +
   geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
   geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed")
 
+# Duration labels from phase start
+ggplot() +
+  # Core stuff
+  geom_hline(aes(yintercept = 0), alpha= 0.2) +
+  geom_line(data = df_days, aes(x = day, y = brix_smooth, group = ferment_period), alpha = 0.25, size = 0.25) +
+  geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
+  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed") +
+  # Ornaments
+  geom_vline(data = df_normals, aes(xintercept = median_diff_from_phase_start, colour = ferment_point)) +
+  geom_label(data = df_normals, aes(label = round(median_diff_from_phase_start, 1), x = median_diff_from_phase_start), y = -50, 
+                                    alpha = 0.85, label.r = unit(0, "lines")) +
+  scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
+  theme(legend.position = "none")
+
+# Duration labels from fermentation start
+ggplot() +
+  # Core stuff
+  geom_hline(aes(yintercept = 0), alpha= 0.2) +
+  geom_line(data = df_days, aes(x = day, y = brix_smooth, group = ferment_period), alpha = 0.25, size = 0.25) +
+  geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
+  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed") +
+  # Ornaments
+  geom_vline(data = df_normals, aes(xintercept = median_diff_from_phase_start, colour = ferment_point)) +
+  geom_label(data = df_normals, aes(label = round(median_diff_from_curve_start, 1), x = median_diff_from_phase_start), y = -50, 
+                                    alpha = 0.85, label.r = unit(0, "lines")) +
+  scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
+  theme(legend.position = "none")
+
+# Duration and Brix labels
 ggplot() +
   # Core stuff
   geom_hline(aes(yintercept = 0), alpha= 0.2) +
@@ -453,7 +537,36 @@ ggplot() +
   scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
   theme(legend.position = "none")
 
+# Duration, Brix and temperature labels
+ggplot() +
+  # Core stuff
+  geom_hline(aes(yintercept = 0), alpha= 0.2) +
+  geom_line(data = df_days, aes(x = day, y = brix_smooth, group = ferment_period), alpha = 0.25, size = 0.25) +
+  geom_line(data = df_median_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 1) +
+  geom_line(data = df_mean_line, aes(x = day, y = brix_smooth), colour = "steelblue", size = 0.5, linetype = "dashed") +
+  # Day labels
+  geom_vline(data = df_normals, aes(xintercept = median_diff_from_phase_start, colour = ferment_point)) +
+  geom_label(data = df_normals, aes(label = round(median_diff_from_phase_start, 1), x = median_diff_from_phase_start), y = -50, 
+                                    alpha = 0.85, label.r = unit(0, "lines")) +
+  # Brix labels
+  geom_label(data = df_normals %>% filter(ferment_point != "Point 5"), 
+             aes(label = round(median_brix_smooth, 1), x = median_diff_from_phase_start, y = median_brix_smooth), 
+             alpha = 0.75, label.r = unit(0, "lines"), nudge_y = - 3) +
+  # Temp labels
+  geom_label(data = df_normals %>% filter(ferment_point != "Point 5"),
+             aes(label = paste0(round(median_temp, 0), "°"), x = median_diff_from_phase_start, y = 35),
+             alpha = 0.85, label.r = unit(0, "lines")) +
+  # General style
+  scale_color_manual(values = c("darkgreen", "darkseagreen", "steelblue", "salmon", "darkred")) +
+  theme(legend.position = "none")
+
 ```
+
+```{r}
+df_normals
+```
+
+
 ---
 
 TODO:
