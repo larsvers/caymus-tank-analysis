@@ -1,0 +1,289 @@
+---
+title: "Inflection point refine"
+format: html
+editor: visual
+---
+
+## Objective
+
+We need to find an algorithm detecting the inflection point on real time data.
+
+### Current implementation
+
+So far inflection point detection requires the full curve data at least from between fermentation start to fermentation end. The algo uses the full data to find the global first derivative minimum as a detection:
+
+1.  find the minimum slope value of a decreasing brix curve (slope \< 0)
+2.  \...of all brix values above 5 (to remove real low ones)
+
+### Simple refined implementation
+
+To start with we should implement a simple solution based on **derivatives** and **heuristics**. If this is not working we can think about a more complex solution also producing quantitative measures of uncertainty (bootstrapped linear regression or non-linear regression).
+
+1.  take the smoothed curve (maybe heavily smoothed?)
+2.  (optional) aggregate over a day (or another time period) to increase smoothing
+3.  check for 2nd derivative to change sign from negative to positive ([explainer](https://www.khanacademy.org/math/ap-calculus-ab/ab-diff-analytical-applications-new/ab-5-6a/v/inflection-points))
+4.  potentially add heuristics:
+    -   minimum time distance to fermentation start
+    -   brix range
+
+To be tested with the existing curves.
+
+## Inflection Refine
+
+What do we need to refine the inflection?
+
+-   Brix and time data of all curves (time maybe indexed as periods?)
+-   1st and 2nd derivative
+-   A way to call simulate real time brix
+
+Next test what inflection points the 2nd derivative brings about
+
+### Libs
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/all"
+```
+
+### Load data
+
+```{r}
+df <- readr::read_csv(paste0(path_root, path_data, path_tank, "/df_brix_smooth_all_tanks.csv"))
+df
+```
+
+Here's a visual overview
+
+```{r}
+{r}
+# Get a vector of points to draw the ferment point lines.
+starts <- df %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+  pull(check)
+
+point_3s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+  pull(check)
+
+point_4s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+  pull(check)
+
+# Plot
+(p1 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p2 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'cornflowerblue') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+  
+(p3 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_2), colour = 'peru') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p4 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = temp), color = "#666666") +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+  
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+plotly::ggplotly(p3)
+plotly::ggplotly(p4)
+```
+
+### Single dataset
+
+```{r}
+(test <- df %>% 
+  filter(ferment_period == "D1-21-Oct-02"))
+```
+
+Just look at 2nd derivative
+
+```{r}
+
+test %>% ggplot() +
+  geom_line(aes(x = time, y = brix_smooth))
+
+test %>% ggplot() +
+  geom_line(aes(x = time, y = brix_deriv_1_smooth))
+
+test %>% ggplot() +
+  geom_line(aes(x = time, y = brix_deriv_2))
+  
+
+```
+
+Ok! Next, let's detect negative to positive sign changes of the 2nd derivative
+
+```{r}
+
+# Creating a new column to store potential inflections:
+test %>% 
+  mutate(inflection = ifelse(lag(brix_deriv_2) < 0 & brix_deriv_2 > 0, "Inflection", ""))
+
+# Write to file to have a better look
+test %>% 
+  mutate(inflection = ifelse(lag(brix_deriv_2) < 0 & brix_deriv_2 > 0, "Inflection", "")) %>% 
+  select(time, brix, brix_deriv_2, ferment_point, inflection) %>% 
+  write_csv("test.csv")
+
+```
+
+It'd be good to only calculate them after ferment start and before ferment end. But that would probably ideally be implemented once we have the other waypoint calcs set up to be real time (so we can check which phase we're in).
+
+Then it's up for discussion if we
+
+1.  just take the first and call it a day or
+2.  show each inflection point and let the viewer decide if it;s a real one.
+
+To start with, option (2) is my clear favourite as it allows us / the user / the system to learn.
+
+Then we'd want to calculate these for all curves and have a looksis.
+
+First, we add 2nd derivative based inflection points as new variabl:
+
+```{r}
+
+df <- df %>% 
+  mutate(inflection = ifelse(lag(brix_deriv_2) < 0 & brix_deriv_2 > 0, "Inflection", ""))
+```
+
+Second we visualise and have a look:
+
+```{r}
+# Get a vector of points to draw the ferment point lines.
+starts <- df %>% 
+  mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
+  pull(check)
+
+ends <- df %>% 
+  mutate(check = ifelse(ferment == "end", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 2", time, NA_Date_)) %>% 
+  pull(check)
+
+point_3s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 3", time, NA_Date_)) %>% 
+  pull(check)
+
+point_2nd_deriv_inflection <- df %>% 
+  mutate(check = ifelse(inflection == "Inflection", time, NA_Date_)) %>% 
+  pull(check)
+
+point_4s <- df %>% 
+  mutate(check = ifelse(ferment_point == "Point 4", time, NA_Date_)) %>% 
+  pull(check)
+
+# Plot
+(p1 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    ylim(c(-5, 30)) +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p2 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'cornflowerblue') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+  
+(p3 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_2), colour = 'peru') +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p4 <- df %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = temp), color = "#666666") +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    facet_wrap(~ferment_period, scales = "free"))
+  
+plotly::ggplotly(p1)
+plotly::ggplotly(p2)
+plotly::ggplotly(p3)
+plotly::ggplotly(p4)
+
+
+
+```
+
+So that's looking good. There are many dashed inflection point lines, but each *globally detected inflection point* (Point 3) is hit by a *2nd deriv inflection point*. This is good.
+
+I am not really too worried about the ones coming after as a workflow (at least to start) would be to flag the inflection point up and then let a human eye determine if it is or is not **the** inflection point. Once that human eye has approved an inflection, they can turn off the detection algorithm for this fermentation.
+
+However, we should defend against the early *2nd deriv inflection points* as these are often before the brix drop off and as such are rather unlikely to define inflection and should be removed.
+
+As such, the next challenge is brix drop off detection.
+
+## Brix drop off detection
+
+Couple of options:
+
+1.  Identify brix drop
+2.  Identify 1st derivate drops
+3.  Use change point analysis (which requires the global timeseries) (so no)
+
+Looking at the brix and it's 1st and 2nd derivatives there isn't really a stark benefit the derivatives would bring to the detection. It seems the actual brix drop would be used best to identify its own drop :)
+
+### Algo design attempt
+
+Get a sliding window of a certain size starting at fermentation start and compare current value with window - not that great - is just a different version of 1st derivative...
+
+```{r}
+df %>% 
+  filter(ferment_period == "D1-21-Oct-02", ferment_phase == "Phase 2") %>% 
+  select(time, brix_smooth, brix_deriv_1_smooth, brix_deriv_2) %>% 
+  write_csv("test.csv")
+```

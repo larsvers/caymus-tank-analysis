@@ -49,8 +49,11 @@ df_list <- lapply(path_tanks, load_data)
 df <- bind_rows(df_list) %>% as_tibble()
 
 ```
+```{r}
+df
+```
 
-Only keep fermentation curves:
+Only keep fermentation curves (this is the same as df_brix_smooth_all_tanks.csv):
 
 ```{r filter-non-ferment}
 
