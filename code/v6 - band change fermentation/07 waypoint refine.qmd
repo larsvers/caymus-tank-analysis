@@ -28,13 +28,13 @@ To start with we should implement a simple solution based on **derivatives** and
 
 To be tested with the existing curves.
 
-## Inflection Refine
+## Prep and initial thoughts
 
 What do we need to refine the inflection?
 
 -   Brix and time data of all curves (time maybe indexed as periods?)
 -   1st and 2nd derivative
--   A way to call simulate real time brix
+-   A way to simulate real time brix
 
 Next test what inflection points the 2nd derivative brings about
 
@@ -44,6 +44,7 @@ Next test what inflection points the 2nd derivative brings about
 library(tidyverse)
 library(lubridate)
 library(ggplot2)
+library(slider)
 detach("package:dplyr")
 library(dplyr)
 
@@ -63,7 +64,6 @@ df
 Here's a visual overview
 
 ```{r}
-{r}
 # Get a vector of points to draw the ferment point lines.
 starts <- df %>% 
   mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
@@ -173,9 +173,9 @@ Then it's up for discussion if we
 
 To start with, option (2) is my clear favourite as it allows us / the user / the system to learn.
 
-Then we'd want to calculate these for all curves and have a looksis.
+Then we'd want to calculate these for all curves and have a looksies.
 
-First, we add 2nd derivative based inflection points as new variabl:
+First, we add 2nd derivative based inflection points as new variable:
 
 ```{r}
 
@@ -185,7 +185,7 @@ df <- df %>%
 
 Second we visualise and have a look:
 
-```{r}
+```{r visual}
 # Get a vector of points to draw the ferment point lines.
 starts <- df %>% 
   mutate(check = ifelse(ferment == "start", time, NA_Date_)) %>% 
@@ -267,7 +267,7 @@ However, we should defend against the early *2nd deriv inflection points* as the
 
 As such, the next challenge is brix drop off detection.
 
-## Brix drop off detection
+## Drop off detection / Inflection defense
 
 Couple of options:
 
@@ -275,15 +275,241 @@ Couple of options:
 2.  Identify 1st derivate drops
 3.  Use change point analysis (which requires the global timeseries) (so no)
 
-Looking at the brix and it's 1st and 2nd derivatives there isn't really a stark benefit the derivatives would bring to the detection. It seems the actual brix drop would be used best to identify its own drop :)
+Looking at the brix and its 1st and 2nd derivatives there isn't really a stark benefit the derivatives would bring to the detection. It seems the actual brix drop would be used best to identify its own drop :)
 
-### Algo design attempt
+There are a few graph-knee detection algos, but some like the [kneedle](https://towardsdatascience.com/detecting-knee-elbow-points-in-a-graph-d13fc517a63c) approach require the global data, [others](https://stackoverflow.com/a/47681057/3219033) are basically a fancy derivative calculation.
 
-Get a sliding window of a certain size starting at fermentation start and compare current value with window - not that great - is just a different version of 1st derivative...
+So one route to
+
+-   either the drop off detection
+-   or the inflection defense
+
+is to check for the slope to be of a certain minimum negative value and (less so) check for brix to be below a certain level
+
+Drop off detection algo: if we're **past ferment start** and the slope is at least **negative x** == drop off point
+
+Early Inflection defense: if there's a 2nd deirvative inflection and the slope is at least **negative x** == inflection
+
+### Slopes at inflection point
+
+Let's check the slope at inflection points:
 
 ```{r}
-df %>% 
-  filter(ferment_period == "D1-21-Oct-02", ferment_phase == "Phase 2") %>% 
-  select(time, brix_smooth, brix_deriv_1_smooth, brix_deriv_2) %>% 
-  write_csv("test.csv")
+df %>% names
+
+(check <- df %>% 
+  mutate(inflection = ifelse(lag(brix_deriv_2) < 0 & brix_deriv_2 > 0, "Inflection", "")) %>% 
+  filter(ferment_phase == "Phase 2") %>% 
+  filter(inflection == "Inflection") %>% 
+  select(time, inflection, brix_smooth, brix_deriv_1_smooth))
+
+check %>% summary
+  
 ```
+
+Let's visualise that (depends on code block `visual` above):
+
+```{r}
+
+p1 <- df %>%
+  # filter(ferment_period_phase == "D1-21-Oct-02") %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    # geom_label(aes(x = !!mean_var, y = Inf, label = round(!!mean_var, 1)), vjust = 1.2, hjust = -0.2) +
+    ylim(c(-5, 30)) +
+    facet_wrap(~ferment_period, scales = "free")
+
+df %>%
+  select(time, brix_deriv_1_smooth, ferment_period, inflection) %>% 
+  mutate(brix_slope_window = slider::slide_dbl(brix_deriv_1_smooth, mean, .before = 10))
+  
+
+infl_data <- df %>%
+# df %>%
+  select(time, brix_deriv_1_smooth, ferment_period, inflection) %>% 
+  
+  # Add a rolling 1st derivative average:
+  mutate(brix_slope_window = slider::slide_dbl(brix_deriv_1_smooth, mean, .before = 20)) %>% 
+  
+  filter(inflection == "Inflection") %>% 
+  group_by(ferment_period) %>% 
+  mutate(index = row_number()) %>% 
+  ungroup()
+    
+
+p1 + 
+  geom_text(data = infl_data, 
+            aes(x = time, 
+                y = index * 4, 
+                # The actual 1st derivative values
+                # label = round(brix_deriv_1_smooth, 2)), 
+                # The rolling average 1st derivative values
+                label = round(brix_slope_window, 2)),
+            vjust = 1.2, hjust = -0.2)
+
+```
+
+The rolling window doesn't change much ☹️
+
+### Rethinking derivatives
+
+Looking at above I wonder why the slope values are so different when the brix slopes themselves look pretty similar? I mean come to think of it, shouldn't the slope value of an irregular time series be normalised over time?
+
+Let's try and calculate 1st derivatives normalised by time:
+
+```{r}
+
+df_deriv_norm <- df %>% 
+  # select(time, brix_smooth) %>% 
+  mutate(time_diff = as.numeric(interval(lag(time, 1), time), units = "days")) %>% 
+  mutate(brix_deriv_1_norm = (brix_smooth - lag(brix_smooth)) / time_diff)
+
+```
+
+And now let's visualise:
+
+```{r}
+
+p1 <- df_deriv_norm %>%
+  # filter(ferment_period_phase == "D1-21-Oct-02") %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    geom_vline(aes(xintercept = point_2s), colour = 'darkseagreen') +
+    geom_vline(aes(xintercept = point_3s), colour = 'steelblue') +
+    geom_vline(aes(xintercept = point_2nd_deriv_inflection), colour = 'black', linetype = 'dotted') +
+    geom_vline(aes(xintercept = point_4s), colour = 'salmon') +
+    ylim(c(-5, 30)) +
+    facet_wrap(~ferment_period, scales = "free")
+
+
+infl_data <- df_deriv_norm %>%
+# df %>%
+  # select(time, brix_deriv_1_smooth, ferment_period, inflection) %>% 
+  select(time, brix_deriv_1_norm, ferment_period, inflection) %>%
+  
+  # Add a rolling avg for the NORMALISED 1st derivative:
+  mutate(brix_deriv_1_norm_rolling = slide_dbl(brix_deriv_1_norm, mean, .before = 20)) %>% 
+  
+  filter(inflection == "Inflection") %>% 
+  group_by(ferment_period) %>% 
+  mutate(index = row_number()) %>% 
+  ungroup()
+    
+
+p1 + 
+  geom_text(data = infl_data, 
+            aes(x = time, 
+                y = index * 4, 
+                # Actual derivative values
+                # label = round(brix_deriv_1_norm, 2)),
+                # Actual derivative values
+                label = round(brix_deriv_1_norm_rolling, 2)),
+            vjust = 1.2, hjust = -0.2)
+
+```
+
+Let's also check smooth brix vs non-normalised vs normalised 1st derivative:
+
+```{r}
+
+(p1 <- df_deriv_norm %>%
+  # filter(ferment_period_phase == "D1-21-Oct-02") %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    ylim(c(-5, 30)) +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p2 <- df_deriv_norm %>%
+  # filter(ferment_period_phase == "D1-21-Oct-02") %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), colour = 'steelblue', size = 0.75) +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p3 <- df_deriv_norm %>%
+  # filter(ferment_period_phase == "D1-21-Oct-02") %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_norm), colour = 'grey', size = 0.75) +
+    ylim(c(-20, 20)) +
+    facet_wrap(~ferment_period, scales = "free"))
+
+```
+
+**Summary:** the time normalised slope indeed clarifies the picture as it highlights slope magnitudes at specific time points. We won't require to extend the concept to the 2nd derivative (acceleration) as the current use of the 2nd derivative is focussed on identifying a slope sign change which the non-normalised 2nd derivative covers.
+
+### Inflection refine algo
+
+So, after looking at the normalised and the rolling normalised, the following could work:
+
+-   Calculate normalised slope (NS)
+-   Calculate normalised with rolling avg (window = 20) (RNS)
+-   Show each inflection with an RNS \>= 7 with a high visual weight (covering all current series but *E1-22-Sep-10*)
+-   Show each inflection with an RNS \>= 5 but \< 7 with a low visual weight (this will cover all)
+
+### Brix drop off algo
+
+The time normalised slope can be used to calculate a brix drop off. An algo could check for any NS \< -10 or maybe looking into RNS values? Let's compare NS versus RNS values:
+
+```{r}
+
+df_deriv_norm <- df_deriv_norm %>% 
+  mutate(brix_deriv_1_norm_rolling = slide_dbl(brix_deriv_1_norm, mean, .before = 20))
+
+```
+
+Check curves
+
+```{r}
+(p1 <- df_deriv_norm %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), colour = 'hotpink', size = 0.75) +
+    ylim(c(-5, 30)) +
+    geom_hline(yintercept = 0, color="#aaaaaa") +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p2 <- df_deriv_norm %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_norm), colour = 'skyblue', size = 0.75) +
+    ylim(c(-20, 5)) +
+    geom_hline(yintercept = 0, color="#aaaaaa") +
+    facet_wrap(~ferment_period, scales = "free"))
+
+(p3 <- df_deriv_norm %>%
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_norm_rolling), colour = 'steelblue', size = 0.75) +
+    ylim(c(-20, 5)) +
+    geom_hline(yintercept = 0, color="#aaaaaa") +
+    facet_wrap(~ferment_period, scales = "free"))
+
+```
+
+NS should be just fine. We should do
+
+-   NS \> 10
+-   since ferment start
+-   Drop off NOT required (as in other values should not depend on it)
+
+## Summary and next steps
+
+### Inflection definition
+
+This notebook developed a new algo allowing to calculate the **inflection point in real time** based on the 2nd derivative changing sign from - to +.
+
+There can't be a single inflection point as the smoothed yet still partly noisy brix data will generate multiple inflections. However, we can isolate the most likely inflections by additionally defending against minor inflections in that we consult the **time-normalised slope** underlining inflection points that happen after steep negative slopes.
+
+We bolster this defense by not just looking at the previous slope value but a **window** of 20 previous slope values.
+
+### Brix drop off definition
+
+We can further use this time-normalised slope to estimate a **brix drop off** point. As the fermentation start is rather sensitive, the brix drop off would be an additional waypoint indicating the brix to fall off significantly. This should be an informational waypoint rather than a crucial one as it might not be detected.
+
+### Next steps
+
+The **next notebook** should calculate each waypoint from a real-time perspective. Some of them can just be copied from `02 ferment prep.Rmd`, others would be refined from this very notebook.

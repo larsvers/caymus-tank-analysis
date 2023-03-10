@@ -359,6 +359,28 @@ show_freqs(df_normals_per_line, temp, mean_temp, median_temp)
 
 ```
 
+------------------
+
+See how we can fence in the inflection points (DELETE)
+
+```{r}
+# JUST GET THE values we need
+df_normals_per_line %>% 
+  select(ferment_period, ferment_point_label, diff_from_curve_start) %>% 
+  filter(ferment_point == "Point 3") %>% 
+  arrange(diff_from_curve_start)
+
+df_normals_per_line %>% 
+  select(ferment_period, ferment_point_label, diff_from_curve_start) %>% 
+  filter(ferment_point == "Point 3") %>% 
+  summary()
+
+
+
+```
+
+------------------
+
 Let's check the variance by checking SD of Brix, duration and temp for each point. 
 
 ```{r variance}
