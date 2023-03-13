@@ -1,0 +1,69 @@
+---
+title: "Waypoint refactor"
+format: html
+editor: visual
+---
+
+## Objective
+
+After (1) calculating waypoints in `02 ferment prep.Rmd` and (2) refining waypoints in `07 waypoint refine.qmd` this notebook's task is to cleanly create waypoint calculation functions to work in real time.
+
+```{r libs}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(pracma)
+library(RcppRoll)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/D1"
+```
+
+## Data
+
+```{r}
+(df <- readr::read_csv(
+  paste0(path_root, path_data, path_tank, '/clean/df_clean.csv'), 
+  col_types = cols(.default = "?", state = "i", abv = "d", mode_type = "i")))
+```
+
+```{r eval=FALSE}
+
+(p1 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix"), colour = "steelblue"))
+
+plotly::ggplotly(p1)
+
+```
+
+## Data prep
+
+The data output of this data prep section would be assumed to be handled on the Ignition side. In other words: all algos will expect the output of these data prep steps.
+
+```{r}
+
+(df_brix <- df %>%
+  select(time, brix, temp) %>%
+  filter(brix != lag(brix)))
+  
+```
+
+## Tools
+
+This should include:
+
+-   Brix smooth
+-   1st deriv / slope
+-   1st deriv / Slope smooth
+-   2nd deriv / acceleration
+
+Further mechanics for later:
+
+-   Add a variable uniquely labeling fermentation period and tank
+-   Add a boolean ferment variable
+
+## Fermentation start
