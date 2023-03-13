@@ -284,7 +284,7 @@ We identified Points (1) and (4) above. Points (2) and (3) are hard to find in t
 
 #### Detect pre-fermentation start (point 1) and post-fermentation end (point 5)
 
-Straight forward as points and phase startes coincide with start and end:
+Straight forward as points and phase starts coincide with start and end:
 
 ```{r}
 

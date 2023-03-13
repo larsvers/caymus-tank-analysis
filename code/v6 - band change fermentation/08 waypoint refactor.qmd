@@ -1,0 +1,318 @@
+---
+title: "Waypoint refactor"
+format: html
+editor: visual
+---
+
+## Objective
+
+After (1) calculating waypoints in `02 ferment prep.Rmd` and (2) refining waypoints in `07 waypoint refine.qmd` this notebook's task is to cleanly create waypoint calculation functions to work in real time.
+
+```{r libs}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(pracma)
+library(RcppRoll)
+library(scales)
+detach("package:dplyr")
+library(dplyr)
+
+# Project path
+path_root <- "/Users/lars/Dropbox/lars/stats/projects/ZAM/caymus"
+path_data <- "/data/v6"
+path_tank <- "/D1"
+```
+
+## Data
+
+```{r}
+(df <- readr::read_csv(
+  paste0(path_root, path_data, path_tank, '/clean/df_clean.csv'), 
+  col_types = cols(.default = "?", state = "i", abv = "d", mode_type = "i")))
+```
+
+```{r eval=FALSE}
+
+(p1 <- ggplot(data = df, aes(x = time)) +
+  geom_line(aes(y = brix, colour = "brix"), colour = "steelblue"))
+
+plotly::ggplotly(p1)
+
+```
+
+## Data prep
+
+The data output of this data prep section would be assumed to be handled on the Ignition side. In other words: all algos will expect the output of these data prep steps.
+
+```{r}
+
+(df <- df %>%
+  select(time, brix, temp) %>%
+  filter(brix != lag(brix)))
+  
+```
+
+## Process
+
+### Steps
+
+-   Function checking each brix value (or each x brix values) coming in doing the following:
+-   Check the phase:
+    -   **Non-fermentation**
+    -   **Fermentation**
+        -   **Lag phase** (from phase start to ferment start
+
+        -   **Exponential phase** (from ferment start to inflection). This can **optionally** further split into
+
+            -   flat phase (before brix drop off)
+            -   steep phase (after brix drop off)
+
+        -   **Stationary phase** (from inflection to ferment end)
+
+        -   **Post fermentation phase** (from ferment end to phase end / press off)
+-   Decide what to do on fermentation boolean:
+    -   If its a **non-fermentation** phase:
+
+        -   set fermentation boolean to false
+        -   return
+
+    -   If it's a **fermentation** phase:
+
+        -   get data from start of fermentation phase to latest value
+        -   calculate tool metrics
+        -   check for new waypoint:
+            -   run algos for each waypoint possible in that phase
+            -   run defenses for each phase (advanced)
+            -   if a defense triggers update previous data (advanced)
+        -   If new waypoint:
+            -   mark new waypoint
+
+            -   start new phase
+
+            -   rinse and repeat
+
+### Description and questions
+
+Clarify how ignition can handle these updates. Here's what would be required:
+
+Starting at non-fermentation for each tank, one procedure (`brix_watch`) would need to check each new / incoming brix value to see if fermentation has started (simple check for brix \> \~15).
+
+`brix_watch` would then trigger the function `brix_handle` handling all further procedures during fermentation.
+
+`brix_handle` would manipulate a fermentation dataset for each new brix value or a set window of brix values. It would require timestamp and raw brix values coming from the sensor as well as all newly created variables (brix smooth, derivatives, waypoints, phases).
+
+**`brix_handle` input**: required data from fermentation start (sensor data: timestamp, brix, mutated data: fermentation boolean, smooth brix, derivatives, waypoints, phases)
+
+**`brix_handle` procedure** (sub-routines running in `brix_handle)`:
+
+1.  Calculate and set smooth brix and its derivatives (based on all brix values from fermentation start)
+2.  Check for and set new waypoints and update fermentation phase
+3.  Run defenses against incoming values to continue or abort fermentation phase
+4.  Check for a fermentation end and return from this function to the higher order function checking for a new fermentation start.
+
+**`brix_handle` output:**
+
+1.  updated data from fermentation start
+2.  fermentation boolean to control `brix_watch`
+
+`brix_handle` would **terminate** once it detects the fermentation end or a false fermentation.
+
+**Questions**:
+
+-   Can we handle changes on the brix as described above? As in can we trigger a function (`brix_watch` here) on fermentation start once the brix value is past X as described above?
+-   Ideally `brix_handle` would write to the same state it feeds from. In other words, we would need to pass the data to `brix_handle` it previously altered. So new data comes in, the function calculates for example the fermentation phase, which we would need for the next brix value. Would that work?
+-   Note, that as a consequence to above point `brix_handle` would have the power to alter any previously set variables. For example 2 days into the fermentation it turns out it wasn't a fermentation at all. `brix_watch` would then be able to overwrite all changes to state and label the previous 2 days as non-fermentation.
+
+## Smooth brix and derivatives
+
+This should include:
+
+-   Brix smooth
+-   1st deriv / slope
+-   1st deriv / Slope smooth
+-   2nd deriv / acceleration
+
+Further mechanics for later:
+
+-   Add a variable uniquely labeling fermentation period and tank
+-   Add a boolean ferment variable
+
+### Helper functions
+
+```{r}
+#' Building out a brix and smooth brix chart.
+chart_smooth_brix <- function(df) {
+  
+  p1 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix), color = "#cccccc") +
+    geom_line(aes(y = brix_smooth), color = "hotpink", size = 1)
+  print(p1)
+  plotly::ggplotly(p1)
+}
+
+#' Building out a brix and smooth brix chart.
+chart_smooth_slope <- function(df) {
+  
+  p1 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1), color = "#cccccc") +
+    geom_line(aes(y = brix_deriv_1_smooth), color = "steelblue", size = 1)
+  print(p1)
+  plotly::ggplotly(p1)
+}
+
+#' Building out a time normalised slope chart
+chart_norm_slope <- function(df) {
+  
+  p1 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_smooth), color = "steelblue", size = 1)
+
+  p2 <- df %>% 
+  ggplot(aes(x = time)) +
+    geom_line(aes(y = brix_deriv_1_norm), color = "skyblue", size = 1)
+  
+  print(p1)
+  print(p2)
+  plotly::ggplotly(p1)
+  plotly::ggplotly(p2)
+}
+```
+
+We need to scale the span by the length of the data. Should be sth like:
+
+\<= 250 -\> 2 // 500 -\> 1 // 1000 -\> 0.5 // \>= 2000 -\> 0.25
+
+```{r}
+#' Scale function with clamp mechanic.
+#' 
+#' @param value The value to scale
+#' @param domain The tuple vector for the input domain
+#' @param range The tuple vector for the output range
+rescale_clamp <- function(value, domain, range) {
+  if (value < min(domain)) return(range[1])
+  if (value > max(domain)) return(range[2])
+  out <- scales::rescale(value, from = domain, to = range)
+  return(round(out,2))
+}
+```
+
+### Interactive set up
+
+```{r}
+
+# Prep (not in function).
+df_test <- df %>% 
+  filter(time > lubridate::ymd_hms("2021-09-14 13:47:02")) %>% 
+  filter(time < lubridate::ymd_hms("2021-09-20 00:00:00"))
+
+# ------------------------------------------------------------------------------
+
+# Calculate span.
+length <- nrow(df_test)
+span <- rescale_clamp(length, c(250, 2000), c(2, 0.25))
+
+print(paste(length, ":", span))
+
+# Get index for loess.
+df_test <- df_test %>% rowid_to_column("index_")
+
+# Add brix smooth.
+result <- loess(brix ~ index_, data = df_test, span = span, na.action = na.exclude)
+df_test$brix_smooth <- predict(result)
+
+# Add slope.
+df_test <- df_test %>% mutate(brix_deriv_1 = pracma::gradient(df_test$brix_smooth))
+
+# Add slope smooth
+result <- loess(brix_deriv_1 ~ index_, data = df_test, span = span, na.action = na.exclude)
+df_test$brix_deriv_1_smooth <- predict(result)
+
+# Add time normalised slope
+df_test <- df_test %>% 
+  mutate(time_diff = as.numeric(interval(lag(time, 1), time), units = "days")) %>% 
+  mutate(brix_deriv_1_norm = (brix_smooth - lag(brix_smooth)) / time_diff)
+
+# ------------------------------------------------------------------------------
+
+# Chart it up.
+chart_smooth_brix(df_test)
+chart_smooth_slope(df_test)
+chart_norm_slope(df_test)
+
+
+
+```
+
+### Smoother function
+
+```{r}
+#' Smoother function
+#' 
+#' @param data Input df expected to have `time` and `brix` cols (and no `index_` col)
+#' @returns A df with augmented brix smooth, slope and acceleration cols
+smooth_brix <- function(data) {
+  # Base data.
+  df <- data
+
+  # Calculate span based on length. Span will be clamped betweeen 
+  # 2 (for low # of rows) and 0.25 (for high # of rows) based on visual checks.
+  length <- nrow(df)
+  span <- rescale_clamp(length, c(250, 700), c(2, 0.25))
+  
+  # Debug span.
+  print(paste(length, ":", span))
+  
+  # Get index for loess.
+  df <- df %>% rowid_to_column("index_")
+  
+  # Add brix smooth.
+  result <- loess(brix ~ index_, data = df, span = span, na.action = na.exclude)
+  df$brix_smooth <- predict(result)
+  
+  # Add slope.
+  df <- df %>% mutate(brix_deriv_1 = pracma::gradient(df$brix_smooth))
+  
+  # Add slope smooth
+  result <- loess(brix_deriv_1 ~ index_, data = df, span = span, na.action = na.exclude)
+  df$brix_deriv_1_smooth <- predict(result)
+  
+  # Add time normalised slope
+  df <- df %>% 
+    mutate(time_diff = as.numeric(interval(lag(time, 1), time), units = "days")) %>% 
+    mutate(brix_deriv_1_norm = (brix_smooth - lag(brix_smooth)) / time_diff)
+
+  # Clean up.
+  df %>% select(-index_)
+
+  return(df)
+}
+```
+
+Test function
+
+```{r}
+test <- df %>% 
+  filter(time > lubridate::ymd_hms("2021-09-14 13:47:02")) %>% 
+  filter(time < lubridate::ymd_hms("2021-09-30 00:00:00")) %>%
+  smooth_brix()
+
+test
+nrow(test)
+
+chart_smooth_brix(test)
+
+```
+
+TODO: Clarify how ignition can handle these updates (see \[Description and questionsDescription and questions\] above)
+
+Starting each tank at non-fermentation, one procedure would need to check each new / incoming brix value to see if it's fermentation start
+
+From this point onwards a function needs to be called for incoming brix values (either for each new value or for a set window of new brix values).
+
+This function would:
+
+1.  Calculate smooth brix and its derivatives based on all brix values from fermentation start
+2.  Check
